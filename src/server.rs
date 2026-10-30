@@ -1,0 +1,60 @@
+//! tiny_http を使って `App` を HTTP で公開する。
+
+use std::io::{self, Read};
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::thread;
+
+use crate::api::{self, App, MAX_BODY};
+
+const WORKERS: usize = 8;
+
+/// `addr` で待ち受けを始める(スレッドを起動して戻る)。
+pub fn serve(app: Arc<App>, addr: SocketAddr) -> io::Result<()> {
+    let server = Arc::new(tiny_http::Server::http(addr).map_err(|e| io::Error::other(e.to_string()))?);
+    for _ in 0..WORKERS {
+        let (server, app) = (Arc::clone(&server), Arc::clone(&app));
+        thread::spawn(move || {
+            for request in server.incoming_requests() {
+                respond(&app, request);
+            }
+        });
+    }
+    Ok(())
+}
+
+fn header(request: &tiny_http::Request, name: &'static str) -> Option<String> {
+    request.headers().iter().find(|h| h.field.equiv(name)).map(|h| h.value.as_str().to_string())
+}
+
+fn respond(app: &App, mut request: tiny_http::Request) {
+    let Some(peer) = request.remote_addr().map(|a| a.ip()) else { return };
+
+    let mut body = Vec::new();
+    let read = request.as_reader().take(MAX_BODY as u64 + 1).read_to_end(&mut body);
+    let response = if read.is_err() || body.len() > MAX_BODY {
+        api::error(413, "リクエストが大きすぎます")
+    } else {
+        app.handle(&api::Request {
+            method: request.method().as_str().to_string(),
+            target: request.url().to_string(),
+            host: header(&request, "Host"),
+            origin: header(&request, "Origin"),
+            content_type: header(&request, "Content-Type"),
+            peer,
+            body,
+        })
+    };
+
+    let mut out = tiny_http::Response::from_string(response.body).with_status_code(response.status);
+    for (name, value) in [
+        ("Content-Type", "application/json; charset=utf-8"),
+        ("Cache-Control", "no-store"),
+        ("X-Content-Type-Options", "nosniff"),
+    ] {
+        if let Ok(h) = tiny_http::Header::from_bytes(name, value) {
+            out.add_header(h);
+        }
+    }
+    let _ = request.respond(out);
+}

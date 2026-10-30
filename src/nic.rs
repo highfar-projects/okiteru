@@ -34,10 +34,28 @@ fn is_virtual_name(name: &str) -> bool {
 }
 
 /// LAN の NIC として使えるアドレスか(家庭 LAN の私的アドレスだけを通す)。
-fn is_lan_address(ip: Ipv4Addr) -> bool {
+pub fn is_lan_address(ip: Ipv4Addr) -> bool {
+    ip.is_private() && !is_tailnet(ip) && !ip.is_loopback() && !ip.is_link_local()
+}
+
+/// Tailscale が使う 100.64.0.0/10。
+pub fn is_tailnet(ip: Ipv4Addr) -> bool {
     let [a, b, ..] = ip.octets();
-    let cgnat = a == 100 && (64..128).contains(&b); // Tailscale の範囲
-    ip.is_private() && !cgnat && !ip.is_loopback() && !ip.is_link_local()
+    a == 100 && (64..128).contains(&b)
+}
+
+/// この PC が持つ Tailscale の IPv4。HTTP の待ち受け先を絞るのに使う。
+pub fn tailnet_ips() -> Vec<Ipv4Addr> {
+    if_addrs::get_if_addrs()
+        .map(|list| {
+            list.into_iter()
+                .filter_map(|i| match i.addr {
+                    if_addrs::IfAddr::V4(v4) if is_tailnet(v4.ip) => Some(v4.ip),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// 既定経路が使う送信元 IP。`connect` は UDP ではパケットを送らない。

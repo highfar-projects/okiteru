@@ -11,6 +11,27 @@ pub struct Mac([u8; 6]);
 #[derive(Debug, PartialEq, Eq)]
 pub struct ParseMacError;
 
+impl fmt::Display for ParseMacError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("MAC アドレスの形式が正しくありません")
+    }
+}
+
+impl std::error::Error for ParseMacError {}
+
+impl serde::Serialize for Mac {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(self)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Mac {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Mac::parse(&s).map_err(serde::de::Error::custom)
+    }
+}
+
 impl Mac {
     /// `AA:BB:CC:DD:EE:FF`・`AA-BB-CC-DD-EE-FF`・`aabbccddeeff` を受け付ける。
     pub fn parse(s: &str) -> Result<Self, ParseMacError> {
