@@ -28,6 +28,11 @@ impl Mac {
     pub fn octets(&self) -> [u8; 6] {
         self.0
     }
+
+    /// ブロードキャスト・マルチキャスト・全ゼロではない、実機の MAC か。
+    pub fn is_unicast(&self) -> bool {
+        self.0[0] & 1 == 0 && self.0 != [0; 6]
+    }
 }
 
 impl fmt::Display for Mac {
