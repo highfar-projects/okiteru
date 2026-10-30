@@ -9,6 +9,7 @@ mod log;
 mod nic;
 mod server;
 mod tailscale;
+mod tracker;
 mod wol;
 #[cfg(windows)]
 mod winsvc;
@@ -27,6 +28,8 @@ use std::{env, thread};
 const DEFAULT_PORT: u16 = 8765;
 /// Tailscale の起動が遅れても拾えるよう、待ち受け先を定期的に見直す。
 const REBIND_INTERVAL: Duration = Duration::from_secs(10);
+/// 画面を開いていなくても起動・停止をログに残すための確認の間隔。
+const MONITOR_INTERVAL: Duration = Duration::from_secs(10);
 
 const USAGE: &str = "使い方:
   okiteru [--port 番号] [--config ファイル]   前面で実行する
@@ -85,6 +88,13 @@ fn run(opts: &Options, stop: Option<&Receiver<()>>) -> Result<(), String> {
     let store = config::Store::load(&opts.config).map_err(|e| e.to_string())?;
     log::line(&format!("設定ファイル: {}", opts.config.display()));
     let app = Arc::new(api::App::new(store));
+    {
+        let app = Arc::clone(&app);
+        thread::spawn(move || loop {
+            app.monitor_once();
+            thread::sleep(MONITOR_INTERVAL);
+        });
+    }
 
     let mut bound = HashSet::new();
     let mut reported = HashSet::new();
@@ -167,6 +177,7 @@ mod policy_tests {
             ("nic.rs", include_str!("nic.rs")),
             ("server.rs", include_str!("server.rs")),
             ("tailscale.rs", include_str!("tailscale.rs")),
+            ("tracker.rs", include_str!("tracker.rs")),
             ("winsvc.rs", include_str!("winsvc.rs")),
             ("wol.rs", include_str!("wol.rs")),
         ];

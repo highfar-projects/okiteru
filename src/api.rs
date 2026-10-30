@@ -17,7 +17,8 @@ use serde_json::json;
 
 use crate::config::{ConfigError, Device, NewDevice, Patch, Store};
 use crate::wol::Mac;
-use crate::{discovery, nic, wol};
+use crate::tracker::{Event, Tracker};
+use crate::{discovery, log, nic, wol};
 
 pub const MAX_BODY: usize = 16 * 1024;
 const WAKE_COOLDOWN: Duration = Duration::from_secs(2);
@@ -168,11 +169,12 @@ fn config_error(e: ConfigError) -> Response {
 pub struct App {
     store: Mutex<Store>,
     last_wake: Mutex<HashMap<u32, Instant>>,
+    tracker: Mutex<Tracker>,
 }
 
 impl App {
     pub fn new(store: Store) -> App {
-        App { store: Mutex::new(store), last_wake: Mutex::new(HashMap::new()) }
+        App { store: Mutex::new(store), last_wake: Mutex::new(HashMap::new()), tracker: Mutex::new(Tracker::default()) }
     }
 
     pub fn handle(&self, req: &Request) -> Response {
@@ -189,54 +191,86 @@ impl App {
         let id = |s: &str| s.parse::<u32>().ok();
         match (req.method.as_str(), segments.as_slice()) {
             ("GET", ["api", "devices"]) => self.list(),
-            ("POST", ["api", "devices"]) => self.add(&req.body),
-            ("PATCH", ["api", "devices", i]) => id(i).map_or_else(not_found, |i| self.patch(i, &req.body)),
-            ("DELETE", ["api", "devices", i]) => id(i).map_or_else(not_found, |i| self.remove(i)),
-            ("POST", ["api", "devices", i, "wake"]) => id(i).map_or_else(not_found, |i| self.wake(i)),
-            ("GET", ["api", "candidates"]) => self.candidates(),
+            ("POST", ["api", "devices"]) => self.add(&req.body, req.peer),
+            ("PATCH", ["api", "devices", i]) => id(i).map_or_else(not_found, |i| self.patch(i, &req.body, req.peer)),
+            ("DELETE", ["api", "devices", i]) => id(i).map_or_else(not_found, |i| self.remove(i, req.peer)),
+            ("POST", ["api", "devices", i, "wake"]) => id(i).map_or_else(not_found, |i| self.wake(i, req.peer)),
+            ("GET", ["api", "candidates"]) => self.candidates(req.peer),
             _ => not_found(),
         }
     }
 
     fn list(&self) -> Response {
         let devices = lock(&self.store).devices().to_vec();
-        let up: Vec<bool> = thread::scope(|s| {
-            let handles: Vec<_> = devices.iter().map(|d| s.spawn(move || probe(d.ip, d.check_port))).collect();
-            handles.into_iter().map(|h| h.join().unwrap_or(false)).collect()
-        });
+        let up = probe_all(&devices);
+        self.observe(&devices, &up);
         let views: Vec<_> = devices.iter().zip(up).map(|(device, up)| DeviceView { device, up }).collect();
         json_response(200, &views)
     }
 
-    fn add(&self, body: &[u8]) -> Response {
+    /// 確認結果から状態の変化を見つけ、ログに残す。
+    fn observe(&self, devices: &[Device], up: &[bool]) {
+        let now = Instant::now();
+        let mut tracker = lock(&self.tracker);
+        for (device, &up) in devices.iter().zip(up) {
+            if let Some(event) = tracker.observe(device.id, up, now) {
+                log::line(&describe(&device.name, &event));
+            }
+        }
+    }
+
+    /// 画面が開かれていなくても起動・停止を記録できるよう、定期的に呼ぶ。
+    pub fn monitor_once(&self) {
+        let devices = lock(&self.store).devices().to_vec();
+        let up = probe_all(&devices);
+        self.observe(&devices, &up);
+    }
+
+    fn add(&self, body: &[u8], peer: IpAddr) -> Response {
         let Ok(b) = serde_json::from_slice::<AddBody>(body) else { return bad_body() };
         let new = NewDevice { name: b.name, mac: b.mac, ip: b.ip, check_port: b.check_port };
         match lock(&self.store).add(new) {
-            Ok(device) => json_response(201, &device),
+            Ok(device) => {
+                log::line(&format!(
+                    "機器を追加しました: 「{}」 {} {} ポート{}(要求元 {peer})",
+                    device.name, device.ip, device.mac, device.check_port
+                ));
+                json_response(201, &device)
+            }
             Err(e) => config_error(e),
         }
     }
 
-    fn patch(&self, id: u32, body: &[u8]) -> Response {
+    fn patch(&self, id: u32, body: &[u8], peer: IpAddr) -> Response {
         let Ok(b) = serde_json::from_slice::<PatchBody>(body) else { return bad_body() };
         let patch = Patch { name: b.name, mac: b.mac, ip: b.ip, check_port: b.check_port };
         match lock(&self.store).update(id, patch) {
-            Ok(device) => json_response(200, &device),
+            Ok(device) => {
+                log::line(&format!(
+                    "機器を変更しました: 「{}」 {} {} ポート{}(要求元 {peer})",
+                    device.name, device.ip, device.mac, device.check_port
+                ));
+                json_response(200, &device)
+            }
             Err(e) => config_error(e),
         }
     }
 
-    fn remove(&self, id: u32) -> Response {
-        match lock(&self.store).remove(id) {
+    fn remove(&self, id: u32, peer: IpAddr) -> Response {
+        let mut store = lock(&self.store);
+        let name = store.get(id).map(|d| d.name.clone());
+        match store.remove(id) {
             Ok(()) => {
                 lock(&self.last_wake).remove(&id);
+                lock(&self.tracker).forget(id);
+                log::line(&format!("機器を削除しました: 「{}」(要求元 {peer})", name.unwrap_or_default()));
                 json_response(200, &json!({ "removed": id }))
             }
             Err(e) => config_error(e),
         }
     }
 
-    fn wake(&self, id: u32) -> Response {
+    fn wake(&self, id: u32, peer: IpAddr) -> Response {
         let Some(device) = lock(&self.store).get(id).cloned() else { return not_found() };
         {
             let mut last = lock(&self.last_wake);
@@ -245,21 +279,20 @@ impl App {
             }
             last.insert(id, Instant::now());
         }
-        let nic = match nic::detect() {
-            Ok(Some(n)) => n,
-            Ok(None) => return error(503, "LAN 側の NIC が見つかりません"),
-            Err(e) => return error(500, &format!("NIC の取得に失敗しました: {e}")),
-        };
-        if !nic.contains(device.ip) {
-            return error(409, &format!("この機器は送信元 NIC({})のサブネットにありません", nic.name));
-        }
-        match wol::send(device.mac, &nic) {
-            Ok(()) => json_response(200, &json!({ "sent": true, "nic": nic.name })),
-            Err(e) => error(502, &format!("マジックパケットを送れませんでした: {e}")),
+        match send_wake(&device) {
+            Ok(nic_name) => {
+                lock(&self.tracker).woke(id, Instant::now());
+                log::line(&format!("起動要求: 「{}」({})へ送信しました(NIC {nic_name}、要求元 {peer})", device.name, device.mac));
+                json_response(200, &json!({ "sent": true, "nic": nic_name }))
+            }
+            Err((status, message)) => {
+                log::line(&format!("起動要求に失敗: 「{}」: {message}(要求元 {peer})", device.name));
+                error(status, &message)
+            }
         }
     }
 
-    fn candidates(&self) -> Response {
+    fn candidates(&self, peer: IpAddr) -> Response {
         let nic = match nic::detect() {
             Ok(Some(n)) => n,
             Ok(None) => return error(503, "LAN 側の NIC が見つかりません"),
@@ -267,8 +300,12 @@ impl App {
         };
         let found = match discovery::scan(&nic) {
             Ok(f) => f,
-            Err(e) => return error(502, &format!("tailscale を実行できませんでした: {e}")),
+            Err(e) => {
+                log::line(&format!("候補の検出に失敗: tailscale を実行できませんでした: {e}(要求元 {peer})"));
+                return error(502, &format!("tailscale を実行できませんでした: {e}"));
+            }
         };
+        log::line(&format!("候補の検出: {} 台見つかりました(要求元 {peer})", found.len()));
         let store = lock(&self.store);
         let views: Vec<_> = found
             .into_iter()
@@ -278,6 +315,37 @@ impl App {
             })
             .collect();
         json_response(200, &views)
+    }
+}
+
+/// マジックパケットを送る。成功したら使った NIC の名前、失敗したら (状態コード, 理由)。
+fn send_wake(device: &Device) -> Result<String, (u16, String)> {
+    let nic = match nic::detect() {
+        Ok(Some(n)) => n,
+        Ok(None) => return Err((503, "LAN 側の NIC が見つかりません".into())),
+        Err(e) => return Err((500, format!("NIC の取得に失敗しました: {e}"))),
+    };
+    if !nic.contains(device.ip) {
+        return Err((409, format!("この機器は送信元 NIC({})のサブネットにありません", nic.name)));
+    }
+    wol::send(device.mac, &nic).map_err(|e| (502, format!("マジックパケットを送れませんでした: {e}")))?;
+    Ok(nic.name)
+}
+
+fn probe_all(devices: &[Device]) -> Vec<bool> {
+    thread::scope(|s| {
+        let handles: Vec<_> = devices.iter().map(|d| s.spawn(move || probe(d.ip, d.check_port))).collect();
+        handles.into_iter().map(|h| h.join().unwrap_or(false)).collect()
+    })
+}
+
+fn describe(name: &str, event: &Event) -> String {
+    match event {
+        Event::Initial { up: true } => format!("「{name}」の現在の状態: 起動中"),
+        Event::Initial { up: false } => format!("「{name}」の現在の状態: 停止中"),
+        Event::Started { after: Some(d) } => format!("「{name}」の起動を確認しました(起動要求から {} 秒)", d.as_secs()),
+        Event::Started { after: None } => format!("「{name}」が起動しました"),
+        Event::Stopped => format!("「{name}」が停止しました"),
     }
 }
 
