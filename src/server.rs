@@ -9,6 +9,10 @@ use crate::api::{self, App, MAX_BODY};
 
 const WORKERS: usize = 8;
 
+/// 自分のスクリプトとスタイルだけを許す。埋め込みやフレーム化も禁止する。
+const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; \
+                   connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
+
 /// `addr` で待ち受けを始める(スレッドを起動して戻る)。
 pub fn serve(app: Arc<App>, addr: SocketAddr) -> io::Result<()> {
     let server = Arc::new(tiny_http::Server::http(addr).map_err(|e| io::Error::other(e.to_string()))?);
@@ -48,9 +52,10 @@ fn respond(app: &App, mut request: tiny_http::Request) {
 
     let mut out = tiny_http::Response::from_string(response.body).with_status_code(response.status);
     for (name, value) in [
-        ("Content-Type", "application/json; charset=utf-8"),
+        ("Content-Type", response.content_type),
         ("Cache-Control", "no-store"),
         ("X-Content-Type-Options", "nosniff"),
+        ("Content-Security-Policy", CSP),
     ] {
         if let Ok(h) = tiny_http::Header::from_bytes(name, value) {
             out.add_header(h);

@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#2563eb">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="okiteru">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/style.css">
+<title>okiteru</title>
+</head>
+<body>
+<header>
+  <h1>okiteru</h1>
+  <button id="open-add" type="button" class="primary">＋ 追加</button>
+</header>
+
+<main>
+  <p id="banner" class="banner" role="status" hidden></p>
+  <ul id="devices" class="devices"></ul>
+  <p id="empty" class="empty" hidden>機器がまだありません。「＋ 追加」から、起動中の機器を探して登録します。</p>
+
+  <details class="help">
+    <summary>起動しないときは</summary>
+    <p>起動される側の PC で、次を確認してください。</p>
+    <ol>
+      <li>BIOS/UEFI で Wake on LAN(「PCIe による電源オン」など)を有効にする。</li>
+      <li>デバイスマネージャー → ネットワーク アダプター → 電源の管理 で、「マジック パケットでのみスタンバイ状態を解除する」を有効にする。</li>
+      <li>電源オプションの「高速スタートアップ」を無効にする(シャットダウンからの起動が効かなくなることがあります)。</li>
+      <li>有線 LAN でつないでいる。Wi-Fi では動かないことがほとんどです。</li>
+      <li>登録した MAC アドレスが、有線 NIC のものである。</li>
+    </ol>
+    <p>起動の確認は、機器ごとに選んだ TCP ポートへの接続で行います。Windows は ping に応答しないためです。
+       リモート デスクトップなら 3389、ファイル共有なら 445 です。</p>
+  </details>
+</main>
+
+<dialog id="add-dialog">
+  <h2>機器を追加</h2>
+  <p class="hint">登録したい PC を起動した状態で「探す」を押してください。同じ tailnet で見つかった、この LAN の機器が出ます。</p>
+  <button id="scan" type="button" class="primary wide">探す</button>
+  <p id="scan-note" class="note" role="status"></p>
+  <ul id="candidates" class="candidates"></ul>
+
+  <details class="manual">
+    <summary>手で入力して追加</summary>
+    <form id="manual-form">
+      <label>名前<input name="name" required maxlength="64" autocomplete="off"></label>
+      <label>MAC アドレス<input name="mac" required placeholder="AA:BB:CC:DD:EE:FF" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+      <label>IP アドレス<input name="ip" required placeholder="192.168.0.10" inputmode="decimal" autocomplete="off"></label>
+      <label>起動確認のポート<input name="check_port" type="number" min="1" max="65535" value="445" list="ports"></label>
+      <p id="manual-note" class="note" role="alert"></p>
+      <button type="submit" class="primary wide">追加する</button>
+    </form>
+  </details>
+
+  <div class="actions"><button id="close-add" type="button">閉じる</button></div>
+</dialog>
+
+<dialog id="edit-dialog">
+  <h2>機器の設定</h2>
+  <form id="edit-form">
+    <label>名前<input name="name" required maxlength="64" autocomplete="off"></label>
+    <label>IP アドレス<input name="ip" required inputmode="decimal" autocomplete="off"></label>
+    <label>起動確認のポート<input name="check_port" type="number" min="1" max="65535" list="ports" required></label>
+    <p class="hint">MAC アドレス: <span id="edit-mac"></span></p>
+    <p id="edit-note" class="note" role="alert"></p>
+    <button type="submit" class="primary wide">保存</button>
+  </form>
+  <div class="actions">
+    <button id="delete" type="button" class="danger">削除</button>
+    <button id="close-edit" type="button">閉じる</button>
+  </div>
+</dialog>
+
+<datalist id="ports">
+  <option value="3389" label="リモート デスクトップ"></option>
+  <option value="445" label="ファイル共有"></option>
+  <option value="22" label="SSH"></option>
+</datalist>
+
+<script src="/app.js" defer></script>
+</body>
+</html>

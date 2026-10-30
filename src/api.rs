@@ -35,11 +35,30 @@ pub struct Request {
 
 pub struct Response {
     pub status: u16,
+    pub content_type: &'static str,
     pub body: String,
 }
 
+const JSON_TYPE: &str = "application/json; charset=utf-8";
+
 pub fn json_response<T: Serialize>(status: u16, value: &T) -> Response {
-    Response { status, body: serde_json::to_string(value).unwrap_or_else(|_| "null".into()) }
+    Response {
+        status,
+        content_type: JSON_TYPE,
+        body: serde_json::to_string(value).unwrap_or_else(|_| "null".into()),
+    }
+}
+
+/// 画面に使う静的ファイル(バイナリに埋め込む)。
+fn asset(path: &str) -> Option<(&'static str, &'static str)> {
+    Some(match path {
+        "/" | "/index.html" => ("text/html; charset=utf-8", include_str!("../web/index.html")),
+        "/app.js" => ("text/javascript; charset=utf-8", include_str!("../web/app.js")),
+        "/style.css" => ("text/css; charset=utf-8", include_str!("../web/style.css")),
+        "/manifest.webmanifest" => ("application/manifest+json", include_str!("../web/manifest.webmanifest")),
+        "/icon.svg" => ("image/svg+xml", include_str!("../web/icon.svg")),
+        _ => return None,
+    })
 }
 
 pub fn error(status: u16, message: &str) -> Response {
@@ -161,6 +180,11 @@ impl App {
             return rejection;
         }
         let path = req.target.split('?').next().unwrap_or("");
+        if req.method == "GET" {
+            if let Some((content_type, body)) = asset(path) {
+                return Response { status: 200, content_type, body: body.to_string() };
+            }
+        }
         let segments: Vec<&str> = path.trim_matches('/').split('/').collect();
         let id = |s: &str| s.parse::<u32>().ok();
         match (req.method.as_str(), segments.as_slice()) {
@@ -364,6 +388,41 @@ mod tests {
         assert_eq!(app.handle(&req("POST", "/api/devices", ADD)).status, 409);
         assert_eq!(app.handle(&req("DELETE", &format!("/api/devices/{id}"), "")).status, 200);
         assert_eq!(app.handle(&req("DELETE", &format!("/api/devices/{id}"), "")).status, 404);
+    }
+
+    #[test]
+    fn serves_the_web_ui() {
+        let app = app("ui");
+        for (path, content_type) in [
+            ("/", "text/html"),
+            ("/app.js", "text/javascript"),
+            ("/style.css", "text/css"),
+            ("/manifest.webmanifest", "application/manifest+json"),
+            ("/icon.svg", "image/svg+xml"),
+        ] {
+            let r = app.handle(&req("GET", path, ""));
+            assert_eq!(r.status, 200, "{path}");
+            assert!(r.content_type.starts_with(content_type), "{path}");
+            assert!(!r.body.is_empty());
+        }
+        // 画面も同じ保護を受ける
+        let mut r = req("GET", "/", "");
+        r.host = Some("evil.example.com".into());
+        assert_eq!(app.handle(&r).status, 403);
+    }
+
+    /// 画面は CSP(インラインのスクリプト・スタイルを禁止)の下で動かすので、それを破る書き方をしていないか見る。
+    #[test]
+    fn web_ui_is_csp_clean() {
+        let html = include_str!("../web/index.html");
+        let js = include_str!("../web/app.js");
+        assert!(!html.contains(" style="));
+        assert!(!html.contains("<style"));
+        assert!(!html.contains("onclick=") && !html.contains("onsubmit="));
+        assert!(!html.lines().any(|l| l.contains("<script") && !l.contains("src=")));
+        for banned in ["innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function"] {
+            assert!(!js.contains(banned), "{banned}");
+        }
     }
 
     #[test]

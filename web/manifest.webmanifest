@@ -1,0 +1,14 @@
+{
+  "name": "okiteru",
+  "short_name": "okiteru",
+  "description": "LAN 内の PC を Wake-on-LAN で起動・監視する",
+  "lang": "ja",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#18181b",
+  "theme_color": "#2563eb",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
