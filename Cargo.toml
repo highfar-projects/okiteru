@@ -6,3 +6,4 @@ license = "MIT"
 description = "Wake-on-LAN relay for your tailnet: wake and monitor LAN machines from your phone"
 
 [dependencies]
+if-addrs = "0.15.0"
