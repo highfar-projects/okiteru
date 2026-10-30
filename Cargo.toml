@@ -1,0 +1,8 @@
+[package]
+name = "okiteru"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Wake-on-LAN relay for your tailnet: wake and monitor LAN machines from your phone"
+
+[dependencies]
