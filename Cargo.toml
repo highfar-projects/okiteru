@@ -7,3 +7,5 @@ description = "Wake-on-LAN relay for your tailnet: wake and monitor LAN machines
 
 [dependencies]
 if-addrs = "0.15.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"

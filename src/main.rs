@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 mod nic;
+mod tailscale;
 mod wol;
 
 fn main() {
