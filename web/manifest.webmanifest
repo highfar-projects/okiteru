@@ -1,6 +1,6 @@
 {
-  "name": "okiteru",
-  "short_name": "okiteru",
+  "name": "Okiteru?",
+  "short_name": "Okiteru?",
   "description": "LAN 内の PC を Wake-on-LAN で起動・監視する",
   "lang": "ja",
   "start_url": "/",
