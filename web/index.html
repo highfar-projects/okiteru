@@ -66,6 +66,15 @@
     <label>名前<input name="name" required maxlength="64" autocomplete="off"></label>
     <label>IP アドレス<input name="ip" required inputmode="decimal" autocomplete="off"></label>
     <label>起動確認のポート<input name="check_port" type="number" min="1" max="65535" list="ports" required></label>
+    <label>「お休みなさい」でする操作
+      <select name="power">
+        <option value="hibernate">休止状態</option>
+        <option value="sleep">スリープ</option>
+        <option value="shutdown">シャットダウン</option>
+      </select>
+    </label>
+    <label>相手の Tailscale の IP アドレス(「お休みなさい」に必要)<input name="tailnet_ip" placeholder="100.x.x.x" inputmode="decimal" autocomplete="off"></label>
+    <p class="hint">相手の PC にも <code>okiteru install --agent</code> を入れておくと、「お休みなさい」のボタンが出ます。「探す」から追加した機器は、IP アドレスが自動で入ります。</p>
     <p class="hint">MAC アドレス: <span id="edit-mac"></span></p>
     <p id="edit-note" class="note" role="alert"></p>
     <button type="submit" class="primary wide">保存</button>

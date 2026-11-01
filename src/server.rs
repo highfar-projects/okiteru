@@ -5,22 +5,25 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::thread;
 
-use crate::api::{self, App, MAX_BODY};
+use crate::api::{self, Request, Response, MAX_BODY};
 
 const WORKERS: usize = 8;
+
+/// リクエストを受けて応答を返す処理(中継用と agent 用がある)。
+pub type Handler = dyn Fn(&Request) -> Response + Send + Sync;
 
 /// 自分のスクリプトとスタイルだけを許す。埋め込みやフレーム化も禁止する。
 const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; \
                    connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 
 /// `addr` で待ち受けを始める(スレッドを起動して戻る)。
-pub fn serve(app: Arc<App>, addr: SocketAddr) -> io::Result<()> {
+pub fn serve(handler: Arc<Handler>, addr: SocketAddr) -> io::Result<()> {
     let server = Arc::new(tiny_http::Server::http(addr).map_err(|e| io::Error::other(e.to_string()))?);
     for _ in 0..WORKERS {
-        let (server, app) = (Arc::clone(&server), Arc::clone(&app));
+        let (server, handler) = (Arc::clone(&server), Arc::clone(&handler));
         thread::spawn(move || {
             for request in server.incoming_requests() {
-                respond(&app, request);
+                respond(&*handler, request);
             }
         });
     }
@@ -31,7 +34,7 @@ fn header(request: &tiny_http::Request, name: &'static str) -> Option<String> {
     request.headers().iter().find(|h| h.field.equiv(name)).map(|h| h.value.as_str().to_string())
 }
 
-fn respond(app: &App, mut request: tiny_http::Request) {
+fn respond(handler: &Handler, mut request: tiny_http::Request) {
     let Some(peer) = request.remote_addr().map(|a| a.ip()) else { return };
 
     let mut body = Vec::new();
@@ -39,7 +42,7 @@ fn respond(app: &App, mut request: tiny_http::Request) {
     let response = if read.is_err() || body.len() > MAX_BODY {
         api::error(413, "リクエストが大きすぎます")
     } else {
-        app.handle(&api::Request {
+        handler(&api::Request {
             method: request.method().as_str().to_string(),
             target: request.url().to_string(),
             host: header(&request, "Host"),

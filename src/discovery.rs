@@ -22,6 +22,8 @@ pub struct Candidate {
     pub os: String,
     pub ip: Ipv4Addr,
     pub mac: Mac,
+    /// 相手の Tailscale の IP(agent への接続先)
+    pub tailnet_ip: Option<Ipv4Addr>,
 }
 
 pub fn scan(nic: &Iface) -> io::Result<Vec<Candidate>> {
@@ -43,7 +45,7 @@ pub fn scan(nic: &Iface) -> io::Result<Vec<Candidate>> {
     for peer in tailscale::status()?.into_iter().filter(|p| p.online) {
         let Some(ip) = peer.lan_ip(|a| nic.contains(a)) else { continue };
         if let Ok(Some(mac)) = arp::lookup(ip, nic.ip) {
-            found.push(Candidate { host_name: peer.host_name, os: peer.os, ip, mac });
+            found.push(Candidate { host_name: peer.host_name, os: peer.os, ip, mac, tailnet_ip: peer.tailscale_ip });
         }
     }
     Ok(found)

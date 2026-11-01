@@ -28,6 +28,22 @@ LAN 内で常時起動している PC に、Tailscale を入れた上で導入�
 
 サービスは最小権限の `LocalService` で動く。Tailscale の情報を読めないなど、権限が足りないときは `install --system` で `LocalSystem` に切り替えられる。
 
+## 「お休みなさい」(休止・スリープ・シャットダウン)
+
+スマホの「お休みなさい」ボタンで、相手の PC を休止状態(既定)・スリープ・シャットダウンにできます。
+中継から相手の PC を止めるには、相手側に受け口(agent)が要ります。**止めたい PC に** Tailscale を入れた上で、管理者の PowerShell で次を実行します。
+
+```powershell
+.\okiteru.exe install --agent
+```
+
+- サービス `okiteru-agent`(LocalSystem)として登録され、ポート 8766 で、Tailscale と localhost からの要求だけを受けます。
+- 認証は Tailscale に任せています。同じ tailnet の端末なら誰でも頼めるので、制限したいときは Tailscale の ACL で 8766 を絞ってください。
+- 「探す」から追加した機器は、相手の Tailscale の IP が自動で入ります。手で追加した機器は、設定で入力してください。IP が入った機器にだけボタンが出ます。
+- する操作は、機器の設定で機器ごとに選びます。
+- 休止状態は、Windows で休止が有効なときだけ使えます(`powercfg /hibernate on`)。スリープは、休止が有効だと休止になることがあります(Windows の仕様)。
+- 削除は `.\okiteru.exe uninstall --agent`。ログは `C:\ProgramData\okiteru\okiteru-agent.log`。
+
 ## 起動される側の PC の設定
 
 - BIOS/UEFI で Wake on LAN を有効にする

@@ -16,10 +16,16 @@ use windows_service::service::{
 use windows_service::service_control_handler::{self, ServiceControlHandlerResult, ServiceStatusHandle};
 use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 
-use crate::{config, log, nic};
+use crate::{config, log, nic, Role};
 
-pub const NAME: &str = "okiteru";
-const FIREWALL_RULE: &str = "okiteru";
+/// 中継と agent は別のサービスとして登録する(同じ PC に両方入れても衝突しない)。
+pub fn service_name(role: Role) -> &'static str {
+    match role {
+        Role::Relay => "okiteru",
+        Role::Agent => "okiteru-agent",
+    }
+}
+
 const LOCAL_SERVICE: &str = r"NT AUTHORITY\LocalService";
 /// LocalService の SID。設定フォルダの書き込み権限を与えるのに使う。
 const LOCAL_SERVICE_SID: &str = "*S-1-5-19";
@@ -48,6 +54,8 @@ fn scm_error(e: windows_service::Error) -> String {
 
 /// サービスとして動く本体。SCM から別スレッドで呼ばれる。
 pub fn service_main() {
+    let opts = crate::parse_args();
+    let name = service_name(opts.as_ref().map_or(Role::Relay, |o| o.role));
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
     let handler = move |control| match control {
         ServiceControl::Stop | ServiceControl::Shutdown => {
@@ -57,10 +65,10 @@ pub fn service_main() {
         ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
         _ => ServiceControlHandlerResult::NotImplemented,
     };
-    let Ok(status) = service_control_handler::register(NAME, handler) else { return };
+    let Ok(status) = service_control_handler::register(name, handler) else { return };
 
     set_state(&status, ServiceState::Running, 0);
-    let result = crate::parse_args().and_then(|opts| crate::run(&opts, Some(&stop_rx)));
+    let result = opts.and_then(|opts| crate::run(&opts, Some(&stop_rx)));
     if let Err(e) = &result {
         log::line(&format!("サービスを終了します: {e}"));
     }
@@ -104,9 +112,9 @@ fn run_tool(command: &mut Command, what: &str) -> Result<(), String> {
 }
 
 /// 止めて削除する。無ければ何もしない。
-fn remove_service(manager: &ServiceManager) -> Result<bool, String> {
+fn remove_service(manager: &ServiceManager, name: &str) -> Result<bool, String> {
     let access = ServiceAccess::QUERY_STATUS | ServiceAccess::STOP | ServiceAccess::DELETE;
-    let service = match manager.open_service(NAME, access) {
+    let service = match manager.open_service(name, access) {
         Ok(s) => s,
         Err(e) if os_error(&e) == Some(ERROR_SERVICE_DOES_NOT_EXIST) => return Ok(false),
         Err(e) => return Err(scm_error(e)),
@@ -124,11 +132,14 @@ fn remove_service(manager: &ServiceManager) -> Result<bool, String> {
     Ok(true)
 }
 
-pub fn install(port: u16, system: bool) -> Result<(), String> {
+pub fn install(role: Role, port: u16, system: bool) -> Result<(), String> {
+    let name = service_name(role);
+    // 電源操作は LocalService では権限が足りないので、agent は常に LocalSystem で動かす。
+    let system = system || role == Role::Agent;
     let manager =
         ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE)
             .map_err(scm_error)?;
-    if remove_service(&manager)? {
+    if remove_service(&manager, name)? {
         println!("既存のサービスを止めて削除しました");
     }
 
@@ -150,10 +161,10 @@ pub fn install(port: u16, system: bool) -> Result<(), String> {
     }
 
     // Tailscale の範囲からの接続だけを許可する(サービスは許可ダイアログが出ないので、規則が必要)。
-    let _ = Command::new("netsh").args(["advfirewall", "firewall", "delete", "rule", &format!("name={FIREWALL_RULE}")]).output();
+    let _ = Command::new("netsh").args(["advfirewall", "firewall", "delete", "rule", &format!("name={name}")]).output();
     run_tool(
         Command::new("netsh")
-            .args(["advfirewall", "firewall", "add", "rule", &format!("name={FIREWALL_RULE}")])
+            .args(["advfirewall", "firewall", "add", "rule", &format!("name={name}")])
             .args(["dir=in", "action=allow", "protocol=TCP", "remoteip=100.64.0.0/10", "profile=any"])
             .arg(format!("localport={port}"))
             .raw_arg(format!("program=\"{}\"", dest.display())),
@@ -161,13 +172,17 @@ pub fn install(port: u16, system: bool) -> Result<(), String> {
     )?;
 
     let info = ServiceInfo {
-        name: NAME.into(),
-        display_name: "okiteru (Wake-on-LAN relay)".into(),
+        name: name.into(),
+        display_name: match role {
+            Role::Relay => "okiteru (Wake-on-LAN relay)",
+            Role::Agent => "okiteru agent (sleep/shutdown receiver)",
+        }
+        .into(),
         service_type: ServiceType::OWN_PROCESS,
         start_type: ServiceStartType::AutoStart,
         error_control: ServiceErrorControl::Normal,
         executable_path: dest.clone(),
-        launch_arguments: vec![OsString::from("service"), OsString::from("--port"), OsString::from(port.to_string())],
+        launch_arguments: launch_arguments(role, port),
         dependencies: vec![],
         account_name: (!system).then(|| OsString::from(LOCAL_SERVICE)),
         account_password: None,
@@ -185,7 +200,10 @@ pub fn install(port: u16, system: bool) -> Result<(), String> {
         })
         .ok_or("サービスを作れませんでした")?
         .map_err(scm_error)?;
-    let _ = service.set_description("スマホから Tailscale 経由で LAN 内の PC を Wake-on-LAN で起動・監視する");
+    let _ = service.set_description(match role {
+        Role::Relay => "スマホから Tailscale 経由で LAN 内の PC を Wake-on-LAN で起動・監視する",
+        Role::Agent => "Tailscale 経由の要求で、この PC を休止・スリープ・シャットダウンする",
+    });
     // 落ちたら自動で再起動する。
     let _ = service.update_failure_actions(ServiceFailureActions {
         reset_period: ServiceFailureResetPeriod::After(Duration::from_secs(86_400)),
@@ -199,24 +217,43 @@ pub fn install(port: u16, system: bool) -> Result<(), String> {
     });
     service.start::<&str>(&[]).map_err(scm_error)?;
 
-    println!("サービス「{NAME}」を登録して開始しました({})", if system { "LocalSystem" } else { "LocalService" });
+    println!("サービス「{name}」を登録して開始しました({})", if system { "LocalSystem" } else { "LocalService" });
     println!("  実行ファイル: {}", dest.display());
-    println!("  設定ファイル: {}", config::default_path().display());
-    println!("  ログ: {}", data_dir.join("okiteru.log").display());
-    for ip in nic::tailnet_ips() {
-        println!("  スマホから: http://{ip}:{port}/");
+    println!("  ログ: {}", data_dir.join(role.log_name()).display());
+    match role {
+        Role::Relay => {
+            println!("  設定ファイル: {}", config::default_path().display());
+            for ip in nic::tailnet_ips() {
+                println!("  スマホから: http://{ip}:{port}/");
+            }
+        }
+        Role::Agent => {
+            for ip in nic::tailnet_ips() {
+                println!("  中継の設定に入れる Tailscale の IP: {ip}");
+            }
+        }
     }
     Ok(())
 }
 
-pub fn uninstall() -> Result<(), String> {
+fn launch_arguments(role: Role, port: u16) -> Vec<OsString> {
+    let mut args = vec![OsString::from("service")];
+    if role == Role::Agent {
+        args.push(OsString::from("--agent"));
+    }
+    args.extend([OsString::from("--port"), OsString::from(port.to_string())]);
+    args
+}
+
+pub fn uninstall(role: Role) -> Result<(), String> {
+    let name = service_name(role);
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT).map_err(scm_error)?;
-    let removed = remove_service(&manager)?;
-    let _ = Command::new("netsh").args(["advfirewall", "firewall", "delete", "rule", &format!("name={FIREWALL_RULE}")]).output();
+    let removed = remove_service(&manager, name)?;
+    let _ = Command::new("netsh").args(["advfirewall", "firewall", "delete", "rule", &format!("name={name}")]).output();
     if removed {
-        println!("サービス「{NAME}」を停止して削除しました。ファイアウォール規則も削除しました");
+        println!("サービス「{name}」を停止して削除しました。ファイアウォール規則も削除しました");
     } else {
-        println!("サービス「{NAME}」は登録されていません");
+        println!("サービス「{name}」は登録されていません");
     }
     println!("設定ファイルと実行ファイル({})は残してあります。不要なら手で削除してください", program_files_exe()?.display());
     Ok(())

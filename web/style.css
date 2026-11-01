@@ -42,6 +42,7 @@ button:disabled { opacity: .5; }
 .up .dot { background: var(--up); }
 .waiting .dot { background: var(--wait); }
 .card .wake { width: 100%; min-height: 52px; font-size: 1.05rem; }
+.card .sleep { width: 100%; margin-top: 8px; }
 .note { min-height: 1.2em; margin: 8px 0 0; color: var(--muted); font-size: .9rem; overflow-wrap: anywhere; }
 .note.error { color: var(--danger); }
 
@@ -57,7 +58,7 @@ dialog {
 }
 dialog::backdrop { background: rgb(0 0 0 / .5); }
 label { display: block; margin-bottom: 12px; font-size: .9rem; color: var(--muted); }
-input {
+input, select {
   display: block; width: 100%; min-height: 44px; margin-top: 4px; padding: 0 12px;
   font: inherit; font-size: 16px; /* 16px 未満だと iOS が拡大する */
   color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 10px;
@@ -67,3 +68,4 @@ input {
 .candidate { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; }
 .candidate strong { display: block; overflow-wrap: anywhere; }
 .candidate span { color: var(--muted); font-size: .8rem; }
+code { font-size: .85em; }

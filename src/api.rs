@@ -16,9 +16,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::config::{ConfigError, Device, NewDevice, Patch, Store};
+use crate::power::Power;
 use crate::wol::Mac;
 use crate::tracker::{Event, Tracker};
-use crate::{discovery, log, nic, wol};
+use crate::{agent, discovery, log, nic, wol};
 
 pub const MAX_BODY: usize = 16 * 1024;
 const WAKE_COOLDOWN: Duration = Duration::from_secs(2);
@@ -95,7 +96,7 @@ fn origin_matches(origin: &str, host: &str) -> bool {
 }
 
 /// 問題があれば、返すべきエラー応答を返す。
-fn guard(req: &Request) -> Option<Response> {
+pub fn guard(req: &Request) -> Option<Response> {
     if !peer_allowed(req.peer) {
         return Some(error(403, "このアドレスからは使えません"));
     }
@@ -132,6 +133,8 @@ struct AddBody {
     mac: Mac,
     ip: Ipv4Addr,
     check_port: Option<u16>,
+    tailnet_ip: Option<Ipv4Addr>,
+    power: Option<Power>,
 }
 
 #[derive(Deserialize)]
@@ -141,6 +144,9 @@ struct PatchBody {
     mac: Option<Mac>,
     ip: Option<Ipv4Addr>,
     check_port: Option<u16>,
+    /// 空文字で未設定に戻す
+    tailnet_ip: Option<String>,
+    power: Option<Power>,
 }
 
 #[derive(Serialize)]
@@ -195,6 +201,7 @@ impl App {
             ("PATCH", ["api", "devices", i]) => id(i).map_or_else(not_found, |i| self.patch(i, &req.body, req.peer)),
             ("DELETE", ["api", "devices", i]) => id(i).map_or_else(not_found, |i| self.remove(i, req.peer)),
             ("POST", ["api", "devices", i, "wake"]) => id(i).map_or_else(not_found, |i| self.wake(i, req.peer)),
+            ("POST", ["api", "devices", i, "sleep"]) => id(i).map_or_else(not_found, |i| self.sleep(i, req.peer)),
             ("GET", ["api", "candidates"]) => self.candidates(req.peer),
             _ => not_found(),
         }
@@ -228,12 +235,12 @@ impl App {
 
     fn add(&self, body: &[u8], peer: IpAddr) -> Response {
         let Ok(b) = serde_json::from_slice::<AddBody>(body) else { return bad_body() };
-        let new = NewDevice { name: b.name, mac: b.mac, ip: b.ip, check_port: b.check_port };
+        let new = NewDevice { name: b.name, mac: b.mac, ip: b.ip, check_port: b.check_port, tailnet_ip: b.tailnet_ip, power: b.power };
         match lock(&self.store).add(new) {
             Ok(device) => {
                 log::line(&format!(
-                    "機器を追加しました: 「{}」 {} {} ポート{}(要求元 {peer})",
-                    device.name, device.ip, device.mac, device.check_port
+                    "機器を追加しました: 「{}」 {} {} ポート{} お休み={}{}(要求元 {peer})",
+                    device.name, device.ip, device.mac, device.check_port, device.power.label(), tailnet_note(&device)
                 ));
                 json_response(201, &device)
             }
@@ -243,12 +250,20 @@ impl App {
 
     fn patch(&self, id: u32, body: &[u8], peer: IpAddr) -> Response {
         let Ok(b) = serde_json::from_slice::<PatchBody>(body) else { return bad_body() };
-        let patch = Patch { name: b.name, mac: b.mac, ip: b.ip, check_port: b.check_port };
+        let tailnet_ip = match b.tailnet_ip.as_deref().map(str::trim) {
+            None => None,
+            Some("") => Some(None),
+            Some(text) => match text.parse() {
+                Ok(ip) => Some(Some(ip)),
+                Err(_) => return error(400, "Tailscale の IP アドレスが正しくありません"),
+            },
+        };
+        let patch = Patch { name: b.name, mac: b.mac, ip: b.ip, check_port: b.check_port, tailnet_ip, power: b.power };
         match lock(&self.store).update(id, patch) {
             Ok(device) => {
                 log::line(&format!(
-                    "機器を変更しました: 「{}」 {} {} ポート{}(要求元 {peer})",
-                    device.name, device.ip, device.mac, device.check_port
+                    "機器を変更しました: 「{}」 {} {} ポート{} お休み={}{}(要求元 {peer})",
+                    device.name, device.ip, device.mac, device.check_port, device.power.label(), tailnet_note(&device)
                 ));
                 json_response(200, &device)
             }
@@ -288,6 +303,26 @@ impl App {
             Err((status, message)) => {
                 log::line(&format!("起動要求に失敗: 「{}」: {message}(要求元 {peer})", device.name));
                 error(status, &message)
+            }
+        }
+    }
+
+    /// 相手の agent に「お休みなさい」(休止・スリープ・シャットダウン)を頼む。
+    fn sleep(&self, id: u32, peer: IpAddr) -> Response {
+        let Some(device) = lock(&self.store).get(id).cloned() else { return not_found() };
+        let Some(ip) = device.tailnet_ip else {
+            return error(409, "この機器の Tailscale の IP アドレスが未設定です。設定で入力してください");
+        };
+        let action = device.power.label();
+        match agent::request(SocketAddr::new(ip.into(), agent::PORT), device.power) {
+            Ok(()) => {
+                lock(&self.tracker).slept(id, Instant::now());
+                log::line(&format!("お休み要求: 「{}」({ip})に{action}を頼みました(要求元 {peer})", device.name));
+                json_response(200, &json!({ "sent": true, "action": device.power }))
+            }
+            Err(message) => {
+                log::line(&format!("お休み要求に失敗: 「{}」({action}): {message}(要求元 {peer})", device.name));
+                error(502, &message)
             }
         }
     }
@@ -345,8 +380,13 @@ fn describe(name: &str, event: &Event) -> String {
         Event::Initial { up: false } => format!("「{name}」の現在の状態: 停止中"),
         Event::Started { after: Some(d) } => format!("「{name}」の起動を確認しました(起動要求から {} 秒)", d.as_secs()),
         Event::Started { after: None } => format!("「{name}」が起動しました"),
-        Event::Stopped => format!("「{name}」が停止しました"),
+        Event::Stopped { after: Some(d) } => format!("「{name}」が停止しました(お休み要求から {} 秒)", d.as_secs()),
+        Event::Stopped { after: None } => format!("「{name}」が停止しました"),
     }
+}
+
+fn tailnet_note(device: &Device) -> String {
+    device.tailnet_ip.map_or_else(String::new, |ip| format!(" agent={ip}"))
 }
 
 fn not_found() -> Response {
@@ -491,6 +531,28 @@ mod tests {
         for banned in ["innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function"] {
             assert!(!js.contains(banned), "{banned}");
         }
+    }
+
+    #[test]
+    fn sleep_needs_a_tailnet_address_and_validates_settings() {
+        let app = app("sleep");
+        let created = app.handle(&req("POST", "/api/devices", ADD));
+        let id = body_json(&created)["id"].as_u64().unwrap();
+        assert_eq!(body_json(&created)["power"], "hibernate");
+        assert!(body_json(&created).get("tailnet_ip").is_none());
+
+        assert_eq!(app.handle(&req("POST", &format!("/api/devices/{id}/sleep"), "{}")).status, 409);
+        assert_eq!(app.handle(&req("POST", "/api/devices/99/sleep", "{}")).status, 404);
+
+        let patch = |body: &str| app.handle(&req("PATCH", &format!("/api/devices/{id}"), body));
+        let ok = patch(r#"{"tailnet_ip":"100.84.187.35","power":"sleep"}"#);
+        assert_eq!(ok.status, 200);
+        assert_eq!((body_json(&ok)["tailnet_ip"].as_str(), body_json(&ok)["power"].as_str()), (Some("100.84.187.35"), Some("sleep")));
+        for bad in [r#"{"tailnet_ip":"192.168.0.5"}"#, r#"{"tailnet_ip":"x"}"#, r#"{"power":"reboot"}"#] {
+            assert_eq!(patch(bad).status, 400, "{bad}");
+        }
+        assert_eq!(patch(r#"{"tailnet_ip":""}"#).status, 200);
+        assert_eq!(app.handle(&req("POST", &format!("/api/devices/{id}/sleep"), "{}")).status, 409);
     }
 
     #[test]

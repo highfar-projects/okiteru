@@ -1,13 +1,15 @@
 "use strict";
 
 const POLL_MS = 3000;
-const WAIT_MS = 180000; // 起動ボタンを押してから、起動を待つ時間
+const WAIT_MS = 180000; // ボタンを押してから、起動・停止を待つ時間
+const POWER_LABELS = { hibernate: "休止状態", sleep: "スリープ", shutdown: "シャットダウン" };
 
 const $ = (selector) => document.querySelector(selector);
 
 let devices = [];
 let timer = null;
 const waitingUntil = new Map(); // id -> 起動待ちの期限
+const sleepingUntil = new Map(); // id -> 停止待ちの期限
 const notes = new Map(); // id -> カードに出すメッセージ { text, error }
 const cards = new Map(); // id -> { li, ...要素 }
 
@@ -53,11 +55,14 @@ function createCard(id) {
   const wake = el("button", "wake primary", "起きてください");
   wake.type = "button";
   wake.addEventListener("click", () => wakeDevice(id));
+  const sleep = el("button", "sleep", "お休みなさい");
+  sleep.type = "button";
+  sleep.addEventListener("click", () => sleepDevice(id));
   const note = el("p", "note");
   note.setAttribute("role", "status");
 
-  li.append(head, sub, state, wake, note);
-  return { li, name, sub, state, label, wake, note };
+  li.append(head, sub, state, wake, sleep, note);
+  return { li, name, sub, state, label, wake, sleep, note };
 }
 
 function render() {
@@ -84,12 +89,23 @@ function render() {
     }
     const waiting = !d.up && waitingUntil.has(d.id);
 
+    const sleepDeadline = sleepingUntil.get(d.id) ?? 0;
+    if (!d.up) {
+      sleepingUntil.delete(d.id);
+    } else if (sleepDeadline && now >= sleepDeadline) {
+      sleepingUntil.delete(d.id);
+      notes.set(d.id, { text: "3 分以内に止まりませんでした。相手の設定を確認してください", error: true });
+    }
+    const sleeping = d.up && sleepingUntil.has(d.id);
+
     card.name.textContent = d.name;
     card.sub.textContent = `${d.ip} ・ 確認ポート ${d.check_port}`;
     card.state.classList.toggle("up", d.up);
-    card.state.classList.toggle("waiting", waiting);
-    card.label.textContent = d.up ? "起きています" : waiting ? "起動待ち…" : "停止しています";
+    card.state.classList.toggle("waiting", waiting || sleeping);
+    card.label.textContent = sleeping ? "お休み待ち…" : d.up ? "起きています" : waiting ? "起動待ち…" : "停止しています";
     card.wake.disabled = d.up || waiting;
+    card.sleep.hidden = !d.tailnet_ip; // 相手の agent に届く IP が分かっている機器だけ
+    card.sleep.disabled = !d.up || sleeping;
     const note = notes.get(d.id);
     setNote(card.note, note ? note.text : "", note?.error);
   }
@@ -99,6 +115,7 @@ function render() {
       card.li.remove();
       cards.delete(id);
       waitingUntil.delete(id);
+      sleepingUntil.delete(id);
       notes.delete(id);
     }
   }
@@ -126,6 +143,22 @@ async function wakeDevice(id) {
     notes.set(id, { text: "マジックパケットを送信しました" });
   } catch (e) {
     notes.set(id, { text: `送信に失敗しました: ${e.message}`, error: true });
+  }
+  render();
+  refresh();
+}
+
+async function sleepDevice(id) {
+  const d = devices.find((x) => x.id === id);
+  if (!d || !confirm(`「${d.name}」を${POWER_LABELS[d.power]}にしますか?`)) return;
+  const card = cards.get(id);
+  if (card) card.sleep.disabled = true;
+  try {
+    await api("POST", `/api/devices/${id}/sleep`);
+    sleepingUntil.set(id, Date.now() + WAIT_MS);
+    notes.set(id, { text: `${POWER_LABELS[d.power]}を頼みました` });
+  } catch (e) {
+    notes.set(id, { text: `頼めませんでした: ${e.message}`, error: true });
   }
   render();
   refresh();
@@ -189,7 +222,9 @@ function candidateItem(c) {
   add.addEventListener("click", async () => {
     add.disabled = true;
     try {
-      await api("POST", "/api/devices", { name: c.host_name, mac: c.mac, ip: c.ip });
+      const body = { name: c.host_name, mac: c.mac, ip: c.ip };
+      if (c.tailnet_ip) body.tailnet_ip = c.tailnet_ip;
+      await api("POST", "/api/devices", body);
       add.textContent = "登録済み";
       refresh();
     } catch (e) {
@@ -234,6 +269,8 @@ function openEdit(id) {
   form.name.value = d.name;
   form.ip.value = d.ip;
   form.check_port.value = d.check_port;
+  form.power.value = d.power;
+  form.tailnet_ip.value = d.tailnet_ip ?? "";
   $("#edit-mac").textContent = d.mac;
   setNote($("#edit-note"), "");
   editDialog.showModal();
@@ -247,6 +284,8 @@ $("#edit-form").addEventListener("submit", async (event) => {
       name: form.name.value,
       ip: form.ip.value,
       check_port: Number(form.check_port.value),
+      power: form.power.value,
+      tailnet_ip: form.tailnet_ip.value.trim(),
     });
     editDialog.close();
     refresh();

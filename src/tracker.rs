@@ -17,7 +17,8 @@ pub enum Event {
     Initial { up: bool },
     /// 起動を確認した。`after` は、直前の起動要求からの時間(要求が無ければ `None`)。
     Started { after: Option<Duration> },
-    Stopped,
+    /// 停止を確認した。`after` は、直前の「お休み」要求からの時間(要求が無ければ `None`)。
+    Stopped { after: Option<Duration> },
 }
 
 struct Seen {
@@ -29,6 +30,7 @@ struct Seen {
 pub struct Tracker {
     seen: HashMap<u32, Seen>,
     awaiting: HashMap<u32, Instant>,
+    sleeping: HashMap<u32, Instant>,
 }
 
 impl Tracker {
@@ -37,9 +39,15 @@ impl Tracker {
         self.awaiting.insert(id, now);
     }
 
+    /// 「お休みなさい」を送った。
+    pub fn slept(&mut self, id: u32, now: Instant) {
+        self.sleeping.insert(id, now);
+    }
+
     pub fn forget(&mut self, id: u32) {
         self.seen.remove(&id);
         self.awaiting.remove(&id);
+        self.sleeping.remove(&id);
     }
 
     /// 1 回の確認結果を渡す。状態が変わったときだけ `Some` を返す。
@@ -54,6 +62,7 @@ impl Tracker {
                 return None;
             }
             seen.up = true;
+            self.sleeping.remove(&id);
             let after = self
                 .awaiting
                 .remove(&id)
@@ -64,7 +73,13 @@ impl Tracker {
         seen.misses = seen.misses.saturating_add(1);
         if seen.up && seen.misses >= STOPPED_AFTER_MISSES {
             seen.up = false;
-            return Some(Event::Stopped);
+            self.awaiting.remove(&id);
+            let after = self
+                .sleeping
+                .remove(&id)
+                .map(|slept| now.saturating_duration_since(slept))
+                .filter(|elapsed| *elapsed <= WAKE_WINDOW);
+            return Some(Event::Stopped { after });
         }
         None
     }
@@ -119,8 +134,21 @@ mod tests {
         assert_eq!(t.observe(1, false, now + secs(10)), None);
         assert_eq!(t.observe(1, true, now + secs(20)), None); // 戻った。何も報告しない
         assert_eq!(t.observe(1, false, now + secs(30)), None);
-        assert_eq!(t.observe(1, false, now + secs(40)), Some(Event::Stopped));
+        assert_eq!(t.observe(1, false, now + secs(40)), Some(Event::Stopped { after: None }));
         assert_eq!(t.observe(1, false, now + secs(50)), None);
+    }
+
+    #[test]
+    fn stop_after_sleep_request_reports_elapsed_time() {
+        let (mut t, now) = (Tracker::default(), Instant::now());
+        t.observe(1, true, now);
+        t.slept(1, now + secs(5));
+        assert_eq!(t.observe(1, false, now + secs(15)), None);
+        assert_eq!(t.observe(1, false, now + secs(25)), Some(Event::Stopped { after: Some(secs(20)) }));
+        // 起動し直したあとの停止は、古い要求と結び付けない
+        t.observe(1, true, now + secs(100));
+        assert_eq!(t.observe(1, false, now + secs(110)), None);
+        assert_eq!(t.observe(1, false, now + secs(120)), Some(Event::Stopped { after: None }));
     }
 
     #[test]

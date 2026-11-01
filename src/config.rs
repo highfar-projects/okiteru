@@ -8,6 +8,7 @@ use std::{env, fs, io};
 use serde::{Deserialize, Serialize};
 
 use crate::nic;
+use crate::power::Power;
 use crate::wol::Mac;
 
 /// 起動確認の既定ポート。Windows は ping に応答しないので TCP で確認する。
@@ -25,6 +26,12 @@ pub struct Device {
     pub mac: Mac,
     pub ip: Ipv4Addr,
     pub check_port: u16,
+    /// 相手側の agent に届く Tailscale の IP。無ければ「お休みなさい」は使えない。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tailnet_ip: Option<Ipv4Addr>,
+    /// 「お休みなさい」で行う操作
+    #[serde(default)]
+    pub power: Power,
 }
 
 #[derive(Debug)]
@@ -58,6 +65,8 @@ pub struct NewDevice {
     pub mac: Mac,
     pub ip: Ipv4Addr,
     pub check_port: Option<u16>,
+    pub tailnet_ip: Option<Ipv4Addr>,
+    pub power: Option<Power>,
 }
 
 #[derive(Default)]
@@ -66,6 +75,9 @@ pub struct Patch {
     pub mac: Option<Mac>,
     pub ip: Option<Ipv4Addr>,
     pub check_port: Option<u16>,
+    /// `Some(None)` で未設定に戻す
+    pub tailnet_ip: Option<Option<Ipv4Addr>>,
+    pub power: Option<Power>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -111,6 +123,15 @@ fn check_ip(ip: Ipv4Addr) -> Result<Ipv4Addr, ConfigError> {
         Ok(ip)
     } else {
         Err(ConfigError::Invalid("LAN の私的 IP アドレス(192.168.x.x など)を指定してください".into()))
+    }
+}
+
+/// agent への接続先は Tailscale の範囲に限る(任意のホストへ接続させない)。
+fn check_tailnet_ip(ip: Ipv4Addr) -> Result<Ipv4Addr, ConfigError> {
+    if nic::is_tailnet(ip) {
+        Ok(ip)
+    } else {
+        Err(ConfigError::Invalid("Tailscale の IP アドレス(100.x.x.x)を指定してください".into()))
     }
 }
 
@@ -169,6 +190,8 @@ impl Store {
             mac,
             ip: check_ip(new.ip)?,
             check_port: check_port(new.check_port.unwrap_or(DEFAULT_CHECK_PORT))?,
+            tailnet_ip: new.tailnet_ip.map(check_tailnet_ip).transpose()?,
+            power: new.power.unwrap_or_default(),
         };
         let mut devices = self.devices.clone();
         devices.push(device.clone());
@@ -190,6 +213,12 @@ impl Store {
         }
         if let Some(port) = patch.check_port {
             device.check_port = check_port(port)?;
+        }
+        if let Some(ip) = patch.tailnet_ip {
+            device.tailnet_ip = ip.map(check_tailnet_ip).transpose()?;
+        }
+        if let Some(power) = patch.power {
+            device.power = power;
         }
         let devices = self.devices.iter().map(|d| if d.id == id { device.clone() } else { d.clone() }).collect();
         self.commit(devices)?;
@@ -242,6 +271,8 @@ mod tests {
             mac: Mac::parse(mac).unwrap(),
             ip: Ipv4Addr::new(192, 168, 0, last),
             check_port: None,
+            tailnet_ip: None,
+            power: None,
         }
     }
 
@@ -299,6 +330,31 @@ mod tests {
         store.remove(a.id).unwrap();
         assert!(matches!(store.remove(a.id), Err(ConfigError::NotFound)));
         assert_eq!(store.devices().len(), 1);
+    }
+
+    #[test]
+    fn power_settings_are_validated_and_old_files_still_load() {
+        let path = temp_path("power");
+        let mut store = Store::load(&path).unwrap();
+        let d = store.add(new_device("a", "02:00:00:00:00:01", 10)).unwrap();
+        assert_eq!((d.tailnet_ip, d.power), (None, Power::Hibernate));
+
+        let ts = Ipv4Addr::new(100, 84, 187, 35);
+        let d = store.update(d.id, Patch { tailnet_ip: Some(Some(ts)), power: Some(Power::Shutdown), ..Patch::default() }).unwrap();
+        assert_eq!((d.tailnet_ip, d.power), (Some(ts), Power::Shutdown));
+        for bad in [Ipv4Addr::new(192, 168, 0, 5), Ipv4Addr::new(8, 8, 8, 8), Ipv4Addr::new(127, 0, 0, 1)] {
+            let patch = Patch { tailnet_ip: Some(Some(bad)), ..Patch::default() };
+            assert!(matches!(store.update(d.id, patch), Err(ConfigError::Invalid(_))), "{bad}");
+        }
+        assert_eq!(Store::load(&path).unwrap().devices(), [d.clone()]);
+        let d = store.update(d.id, Patch { tailnet_ip: Some(None), ..Patch::default() }).unwrap();
+        assert_eq!(d.tailnet_ip, None);
+
+        // この機能より前に書かれたファイル(tailnet_ip・power が無い)
+        let old = r#"{"version":1,"devices":[{"id":1,"name":"旧","mac":"02:00:00:00:00:09","ip":"192.168.0.9","check_port":445}]}"#;
+        fs::write(&path, old).unwrap();
+        let loaded = Store::load(&path).unwrap();
+        assert_eq!((loaded.devices()[0].tailnet_ip, loaded.devices()[0].power), (None, Power::Hibernate));
     }
 
     #[test]
