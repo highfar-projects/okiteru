@@ -12,9 +12,11 @@ Tailscale につなぐだけで、LAN 内の PC をスマホから起こして(W
 
 ## 作った理由
 
-外出先から、スマホの Tailscale 経由で、自宅の PC で動かしている [MulmoTerminal](https://www.mulmoterminal.com/guide/ja/) を操作しています。MulmoTerminal は、Claude Code などの AI コーディングエージェントを複数動かして、ブラウザの 1 画面で見張るための「管制室」です。リモート デスクトップ(RDP)なら何でもできますが、モバイル回線では少し重く感じます。そこで、HTTP だけで操作できる仕組みを求めていました。
+[MulmoTerminal](https://www.mulmoterminal.com/guide/ja/) は、Claude Code などの AI コーディングエージェントを複数動かして、ブラウザの 1 画面で見張るための「管制室」です。私は、自宅の PC で MulmoTerminal を動かし、外出先からスマホの Tailscale 経由で操作しています。
 
-MulmoTerminal は HTTP で操作できても、PC が寝ていたら届きません。そこで、起こす(Wake-on-LAN)のも、休止させるのも、スマホの同じ画面でできる中継として、okiteru を作りました。これで、PC を起こす、MulmoTerminal を操作する、PC を休止させる、までを、すべて HTTP で行えます。
+リモート デスクトップ(RDP)なら何でもできますが、モバイル回線では少し重く感じます。そこで、HTTP だけで操作できる仕組みを求めていました。
+
+ただ、MulmoTerminal が HTTP で操作できても、PC が寝ていたら届きません。そこで、起こす(Wake-on-LAN)のも、休止させるのも、スマホの同じ画面でできる中継として、okiteru を作りました。これで、PC を起こす、MulmoTerminal を操作する、PC を休止させる、までを、すべて HTTP で行えます。
 
 ## 仕組み
 
