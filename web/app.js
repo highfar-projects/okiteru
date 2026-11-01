@@ -50,7 +50,7 @@ function createCard(id) {
   const state = el("div", "state");
   const label = el("span");
   state.append(el("span", "dot"), label);
-  const wake = el("button", "wake primary", "起動する");
+  const wake = el("button", "wake primary", "起きてください");
   wake.type = "button";
   wake.addEventListener("click", () => wakeDevice(id));
   const note = el("p", "note");
