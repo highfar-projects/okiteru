@@ -112,7 +112,7 @@ Tailscale につなぐだけで、LAN 内の PC をスマホから起こして(W
 
 ## ビルドとテスト
 
-Rust(2024 edition 対応の安定版)が要ります。
+Rust 1.88 以降が要ります。
 
 ```powershell
 cargo test

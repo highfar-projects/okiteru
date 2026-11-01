@@ -107,11 +107,10 @@ pub fn guard(req: &Request) -> Option<Response> {
     let Some(host) = req.host.as_deref().filter(|h| host_allowed(h)) else {
         return Some(error(403, "このホスト名ではアクセスできません"));
     };
-    if let Some(origin) = &req.origin {
-        if !origin_matches(origin, host) {
+    if let Some(origin) = &req.origin
+        && !origin_matches(origin, host) {
             return Some(error(403, "別のサイトからの操作は受け付けません"));
         }
-    }
     match req.method.as_str() {
         "GET" => None,
         "POST" | "PATCH" | "DELETE" => {
@@ -192,11 +191,10 @@ impl App {
             return rejection;
         }
         let path = req.target.split('?').next().unwrap_or("");
-        if req.method == "GET" {
-            if let Some((content_type, body)) = asset(path) {
+        if req.method == "GET"
+            && let Some((content_type, body)) = asset(path) {
                 return Response { status: 200, content_type, body: body.to_vec() };
             }
-        }
         let segments: Vec<&str> = path.trim_matches('/').split('/').collect();
         let id = |s: &str| s.parse::<u32>().ok();
         match (req.method.as_str(), segments.as_slice()) {

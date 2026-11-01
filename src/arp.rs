@@ -25,11 +25,10 @@ pub fn parse_windows(text: &str) -> Vec<Entry> {
         }
         let mut tokens = line.split_whitespace();
         let (Some(ip), Some(mac)) = (tokens.next(), tokens.next()) else { continue };
-        if let (Ok(ip), Ok(mac)) = (ip.parse(), Mac::parse(mac)) {
-            if mac.is_unicast() {
+        if let (Ok(ip), Ok(mac)) = (ip.parse(), Mac::parse(mac))
+            && mac.is_unicast() {
                 entries.push(Entry { iface, ip, mac });
             }
-        }
     }
     entries
 }

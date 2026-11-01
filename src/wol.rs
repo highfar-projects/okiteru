@@ -66,7 +66,7 @@ impl fmt::Display for Mac {
 /// 0xFF を 6 バイト + MAC を 16 回(102 バイト)。
 pub fn magic_packet(mac: Mac) -> [u8; 102] {
     let mut packet = [0xffu8; 102];
-    for chunk in packet[6..].chunks_exact_mut(6) {
+    for chunk in packet[6..].as_chunks_mut::<6>().0 {
         chunk.copy_from_slice(&mac.octets());
     }
     packet

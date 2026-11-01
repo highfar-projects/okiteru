@@ -75,7 +75,7 @@ pub fn parse_status(json: &str) -> Result<Vec<Peer>, serde_json::Error> {
             online: p.online,
         })
         .collect();
-    peers.sort_by(|a, b| a.host_name.to_lowercase().cmp(&b.host_name.to_lowercase()));
+    peers.sort_by_cached_key(|p| p.host_name.to_lowercase());
     Ok(peers)
 }
 

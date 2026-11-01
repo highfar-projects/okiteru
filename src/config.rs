@@ -346,7 +346,7 @@ mod tests {
             let patch = Patch { tailnet_ip: Some(Some(bad)), ..Patch::default() };
             assert!(matches!(store.update(d.id, patch), Err(ConfigError::Invalid(_))), "{bad}");
         }
-        assert_eq!(Store::load(&path).unwrap().devices(), [d.clone()]);
+        assert_eq!(Store::load(&path).unwrap().devices(), std::slice::from_ref(&d));
         let d = store.update(d.id, Patch { tailnet_ip: Some(None), ..Patch::default() }).unwrap();
         assert_eq!(d.tailnet_ip, None);
 
