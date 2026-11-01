@@ -121,10 +121,6 @@ cargo build --release   # target\release\okiteru.exe
 
 アイコン(PNG)は `python3 tools/make_icons.py` で `web/icon.svg` と同じ絵から作り直せます。
 
-## 経緯
-
-`docs/prototype/wol_server.py` は、この作りの元になった個人用の試作(Python)です。
-
 ## ライセンス
 
 [MIT](LICENSE)
