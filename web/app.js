@@ -88,7 +88,7 @@ function render() {
     card.sub.textContent = `${d.ip} ・ 確認ポート ${d.check_port}`;
     card.state.classList.toggle("up", d.up);
     card.state.classList.toggle("waiting", waiting);
-    card.label.textContent = d.up ? "起動しています" : waiting ? "起動待ち…" : "停止しています";
+    card.label.textContent = d.up ? "起きています" : waiting ? "起動待ち…" : "停止しています";
     card.wake.disabled = d.up || waiting;
     const note = notes.get(d.id);
     setNote(card.note, note ? note.text : "", note?.error);
