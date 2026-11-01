@@ -32,7 +32,13 @@ jobs:
         run: |
           cp target/release/okiteru.exe okiteru.exe
           sha256sum okiteru.exe > okiteru.exe.sha256
-      - name: Releases に載せる
+      - name: Releases に載せる(同じタグの Release があれば、中身を差し替える)
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" okiteru.exe okiteru.exe.sha256 --title "okiteru $GITHUB_REF_NAME" --notes-file notes.md
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" okiteru.exe okiteru.exe.sha256 --clobber
+            gh release edit "$GITHUB_REF_NAME" --title "okiteru $GITHUB_REF_NAME" --notes-file notes.md
+          else
+            gh release create "$GITHUB_REF_NAME" okiteru.exe okiteru.exe.sha256 --title "okiteru $GITHUB_REF_NAME" --notes-file notes.md
+          fi
