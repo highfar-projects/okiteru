@@ -1,8 +1,10 @@
 [package]
 name = "okiteru"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 license = "MIT"
+repository = "https://github.com/highfar-projects/okiteru"
+readme = "README.md"
 description = "Wake-on-LAN relay for your tailnet: wake and monitor LAN machines from your phone"
 
 [dependencies]

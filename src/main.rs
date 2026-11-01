@@ -192,6 +192,17 @@ fn windows_command(opts: &Options) -> Result<(), String> {
 }
 
 fn main() -> ExitCode {
+    match env::args().nth(1).as_deref() {
+        Some("-h" | "--help" | "help") => {
+            println!("{USAGE}");
+            return ExitCode::SUCCESS;
+        }
+        Some("-V" | "--version") => {
+            println!("okiteru {}", env!("CARGO_PKG_VERSION"));
+            return ExitCode::SUCCESS;
+        }
+        _ => {}
+    }
     let opts = match parse_args() {
         Ok(o) => o,
         Err(e) => {

@@ -1,0 +1,38 @@
+name: release
+
+# v1.0.0 のようなタグを push すると、Windows 用の okiteru.exe を作って Releases に載せる。
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: タグと Cargo.toml の版が合っているか
+        run: |
+          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          test "v$version" = "$GITHUB_REF_NAME" || { echo "タグ $GITHUB_REF_NAME と Cargo.toml の版 $version が違います"; exit 1; }
+      - run: cargo test --locked
+      - run: cargo build --release --locked
+      - name: リリースノートを CHANGELOG から取り出す
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          awk -v v="$version" '$1=="##" && $2==v {on=1; next} $1=="##" {on=0} on' CHANGELOG.md > notes.md
+          test -s notes.md || { echo "CHANGELOG.md に $version の項目がありません"; exit 1; }
+      - name: チェックサムを作る
+        run: |
+          cp target/release/okiteru.exe okiteru.exe
+          sha256sum okiteru.exe > okiteru.exe.sha256
+      - name: Releases に載せる
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" okiteru.exe okiteru.exe.sha256 --title "okiteru $GITHUB_REF_NAME" --notes-file notes.md
