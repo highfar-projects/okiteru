@@ -51,11 +51,11 @@ pub fn request(addr: SocketAddr, power: Power) -> Result<(), String> {
     let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
     let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
     let body = json!({ "action": power }).to_string();
-    let head = format!(
-        "POST /api/power HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+    let message = format!(
+        "POST /api/power HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
-    stream.write_all(head.as_bytes()).and_then(|()| stream.write_all(body.as_bytes())).map_err(|e| format!("送信に失敗しました: {e}"))?;
+    stream.write_all(message.as_bytes()).map_err(|e| format!("送信に失敗しました: {e}"))?;
 
     let mut raw = Vec::new();
     let _ = stream.take(MAX_RESPONSE).read_to_end(&mut raw);
@@ -131,10 +131,18 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let handle = thread::spawn(move || {
             let (mut s, _) = listener.accept().unwrap();
-            let mut buf = vec![0u8; 4096];
-            let n = s.read(&mut buf).unwrap();
+            // 要求の本文まで読んでから応答する(途中で応答すると、相手の送信が切れることがある)
+            let mut received = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !String::from_utf8_lossy(&received).contains("}") {
+                let n = s.read(&mut buf).unwrap();
+                if n == 0 {
+                    break;
+                }
+                received.extend_from_slice(&buf[..n]);
+            }
             s.write_all(reply.as_bytes()).unwrap();
-            String::from_utf8_lossy(&buf[..n]).into_owned()
+            String::from_utf8_lossy(&received).into_owned()
         });
         (addr, handle)
     }

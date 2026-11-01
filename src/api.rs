@@ -38,7 +38,7 @@ pub struct Request {
 pub struct Response {
     pub status: u16,
     pub content_type: &'static str,
-    pub body: String,
+    pub body: Vec<u8>,
 }
 
 const JSON_TYPE: &str = "application/json; charset=utf-8";
@@ -47,18 +47,22 @@ pub fn json_response<T: Serialize>(status: u16, value: &T) -> Response {
     Response {
         status,
         content_type: JSON_TYPE,
-        body: serde_json::to_string(value).unwrap_or_else(|_| "null".into()),
+        body: serde_json::to_vec(value).unwrap_or_else(|_| b"null".to_vec()),
     }
 }
 
 /// 画面に使う静的ファイル(バイナリに埋め込む)。
-fn asset(path: &str) -> Option<(&'static str, &'static str)> {
+fn asset(path: &str) -> Option<(&'static str, &'static [u8])> {
     Some(match path {
-        "/" | "/index.html" => ("text/html; charset=utf-8", include_str!("../web/index.html")),
-        "/app.js" => ("text/javascript; charset=utf-8", include_str!("../web/app.js")),
-        "/style.css" => ("text/css; charset=utf-8", include_str!("../web/style.css")),
-        "/manifest.webmanifest" => ("application/manifest+json", include_str!("../web/manifest.webmanifest")),
-        "/icon.svg" => ("image/svg+xml", include_str!("../web/icon.svg")),
+        "/" | "/index.html" => ("text/html; charset=utf-8", include_bytes!("../web/index.html")),
+        "/app.js" => ("text/javascript; charset=utf-8", include_bytes!("../web/app.js")),
+        "/style.css" => ("text/css; charset=utf-8", include_bytes!("../web/style.css")),
+        "/manifest.webmanifest" => ("application/manifest+json", include_bytes!("../web/manifest.webmanifest")),
+        "/icon.svg" => ("image/svg+xml", include_bytes!("../web/icon.svg")),
+        "/icon-192.png" => ("image/png", include_bytes!("../web/icon-192.png")),
+        "/icon-512.png" => ("image/png", include_bytes!("../web/icon-512.png")),
+        "/icon-maskable-512.png" => ("image/png", include_bytes!("../web/icon-maskable-512.png")),
+        "/apple-touch-icon.png" => ("image/png", include_bytes!("../web/apple-touch-icon.png")),
         _ => return None,
     })
 }
@@ -190,7 +194,7 @@ impl App {
         let path = req.target.split('?').next().unwrap_or("");
         if req.method == "GET" {
             if let Some((content_type, body)) = asset(path) {
-                return Response { status: 200, content_type, body: body.to_string() };
+                return Response { status: 200, content_type, body: body.to_vec() };
             }
         }
         let segments: Vec<&str> = path.trim_matches('/').split('/').collect();
@@ -420,7 +424,7 @@ mod tests {
     }
 
     fn body_json(r: &Response) -> serde_json::Value {
-        serde_json::from_str(&r.body).unwrap()
+        serde_json::from_slice(&r.body).unwrap()
     }
 
     const ADD: &str = r#"{"name":"メイン","mac":"02:00:00:00:00:01","ip":"192.168.0.46"}"#;
@@ -507,6 +511,10 @@ mod tests {
             ("/style.css", "text/css"),
             ("/manifest.webmanifest", "application/manifest+json"),
             ("/icon.svg", "image/svg+xml"),
+            ("/icon-192.png", "image/png"),
+            ("/icon-512.png", "image/png"),
+            ("/icon-maskable-512.png", "image/png"),
+            ("/apple-touch-icon.png", "image/png"),
         ] {
             let r = app.handle(&req("GET", path, ""));
             assert_eq!(r.status, 200, "{path}");
@@ -517,6 +525,29 @@ mod tests {
         let mut r = req("GET", "/", "");
         r.host = Some("evil.example.com".into());
         assert_eq!(app.handle(&r).status, 403);
+    }
+
+    /// ホーム画面に追加(インストール)できる条件。マニフェストが指すものを、実際に配れること。
+    #[test]
+    fn manifest_is_installable() {
+        let app = app("manifest");
+        let r = app.handle(&req("GET", "/manifest.webmanifest", ""));
+        let m = body_json(&r);
+        assert_eq!((m["display"].as_str(), m["start_url"].as_str()), (Some("standalone"), Some("/")));
+        let icons = m["icons"].as_array().unwrap();
+        let has = |size: &str, purpose: &str| icons.iter().any(|i| i["sizes"] == size && i["type"] == "image/png" && i["purpose"] == purpose);
+        assert!(has("192x192", "any") && has("512x512", "any") && has("512x512", "maskable"));
+        for icon in icons {
+            let src = icon["src"].as_str().unwrap();
+            let served = app.handle(&req("GET", src, ""));
+            assert_eq!(served.status, 200, "{src}");
+            if icon["type"] == "image/png" {
+                assert!(served.body.starts_with(b"\x89PNG\r\n\x1a\n"), "{src}");
+            }
+        }
+        let html = include_str!("../web/index.html");
+        assert!(html.contains(r#"rel="apple-touch-icon" href="/apple-touch-icon.png""#));
+        assert_eq!(app.handle(&req("GET", "/apple-touch-icon.png", "")).status, 200);
     }
 
     /// 画面は CSP(インラインのスクリプト・スタイルを禁止)の下で動かすので、それを破る書き方をしていないか見る。

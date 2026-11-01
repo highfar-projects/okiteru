@@ -28,6 +28,19 @@ LAN 内で常時起動している PC に、Tailscale を入れた上で導入�
 
 サービスは最小権限の `LocalService` で動く。Tailscale の情報を読めないなど、権限が足りないときは `install --system` で `LocalSystem` に切り替えられる。
 
+## スマホのホーム画面に追加(アプリとしてインストール)
+
+Chrome(Android)の「インストール」は、HTTPS のときだけ出ます。`http://<Tailscale IP>:8765/` は HTTPS ではないので、`tailscale serve` で HTTPS にします。
+(管理コンソールの DNS ページで、MagicDNS と HTTPS Certificates を有効にしておく。)
+
+```powershell
+tailscale serve --bg --https=443 http://127.0.0.1:8765
+```
+
+スマホで `https://<この PC の名前>.<tailnet 名>.ts.net/` を開き、ブラウザのメニューから「アプリをインストール」を選びます。
+iPhone は Safari の共有メニューから「ホーム画面に追加」で、HTTP のままでも追加できます(アイコンは `apple-touch-icon.png`)。
+アイコン(PNG)は `python3 tools/make_icons.py` で `web/icon.svg` と同じ絵から作り直せます。
+
 ## 「お休みなさい」(休止・スリープ・シャットダウン)
 
 スマホの「お休みなさい」ボタンで、相手の PC を休止状態(既定)・スリープ・シャットダウンにできます。

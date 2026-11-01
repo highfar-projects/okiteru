@@ -85,7 +85,7 @@ function render() {
       notes.delete(d.id);
     } else if (deadline && now >= deadline) {
       waitingUntil.delete(d.id);
-      notes.set(d.id, { text: "3 分以内に起動を確認できませんでした", error: true });
+      notes.set(d.id, { text: "3 分たっても起きませんでした", error: true });
     }
     const waiting = !d.up && waitingUntil.has(d.id);
 
@@ -94,7 +94,7 @@ function render() {
       sleepingUntil.delete(d.id);
     } else if (sleepDeadline && now >= sleepDeadline) {
       sleepingUntil.delete(d.id);
-      notes.set(d.id, { text: "3 分以内に止まりませんでした。相手の設定を確認してください", error: true });
+      notes.set(d.id, { text: "3 分たってもお休みしませんでした。相手の設定を確認してください", error: true });
     }
     const sleeping = d.up && sleepingUntil.has(d.id);
 
@@ -102,7 +102,7 @@ function render() {
     card.sub.textContent = `${d.ip} ・ 確認ポート ${d.check_port}`;
     card.state.classList.toggle("up", d.up);
     card.state.classList.toggle("waiting", waiting || sleeping);
-    card.label.textContent = sleeping ? "お休み待ち…" : d.up ? "起きています" : waiting ? "起動待ち…" : "停止しています";
+    card.label.textContent = sleeping ? "お休みなさい…(お休み待ち)" : d.up ? "起きています" : waiting ? "起きてください…(起きるのを待っています)" : "お休み中です";
     card.wake.disabled = d.up || waiting;
     card.sleep.hidden = !d.tailnet_ip; // 相手の agent に届く IP が分かっている機器だけ
     card.sleep.disabled = !d.up || sleeping;
@@ -140,9 +140,9 @@ async function wakeDevice(id) {
   try {
     await api("POST", `/api/devices/${id}/wake`);
     waitingUntil.set(id, Date.now() + WAIT_MS);
-    notes.set(id, { text: "マジックパケットを送信しました" });
+    notes.set(id, { text: "起きてくださいと呼びかけました" });
   } catch (e) {
-    notes.set(id, { text: `送信に失敗しました: ${e.message}`, error: true });
+    notes.set(id, { text: `呼びかけに失敗しました: ${e.message}`, error: true });
   }
   render();
   refresh();
@@ -156,9 +156,9 @@ async function sleepDevice(id) {
   try {
     await api("POST", `/api/devices/${id}/sleep`);
     sleepingUntil.set(id, Date.now() + WAIT_MS);
-    notes.set(id, { text: `${POWER_LABELS[d.power]}を頼みました` });
+    notes.set(id, { text: `お休みなさいと伝えました(${POWER_LABELS[d.power]})` });
   } catch (e) {
-    notes.set(id, { text: `頼めませんでした: ${e.message}`, error: true });
+    notes.set(id, { text: `伝えられませんでした: ${e.message}`, error: true });
   }
   render();
   refresh();

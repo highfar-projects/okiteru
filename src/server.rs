@@ -53,7 +53,7 @@ fn respond(handler: &Handler, mut request: tiny_http::Request) {
         })
     };
 
-    let mut out = tiny_http::Response::from_string(response.body).with_status_code(response.status);
+    let mut out = tiny_http::Response::from_data(response.body).with_status_code(response.status);
     for (name, value) in [
         ("Content-Type", response.content_type),
         ("Cache-Control", "no-store"),
