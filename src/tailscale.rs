@@ -147,7 +147,7 @@ mod tests {
     #[test]
     fn ipv6_direct_path_is_not_a_lan_ipv4() {
         let mut p = peer("Main");
-        p.cur_addr = "[2400:4052:7ba0:3100::1]:41641".parse().ok();
+        p.cur_addr = "[2001:db8::1]:41641".parse().ok();
         assert_eq!(p.lan_ip(|_| true), None);
     }
 
