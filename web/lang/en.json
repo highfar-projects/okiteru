@@ -148,5 +148,7 @@
  "err.auth_unavailable": "The login settings cannot be read, so every request is refused: {detail}",
  "err.login_required": "Login required",
  "err.login_locked": "Login is paused after repeated failures. Wait about {secs} seconds",
- "err.wrong_pin": "Wrong PIN"
+ "err.wrong_pin": "Wrong PIN",
+ "err.agent_unauthorized": "The agent on that machine requires authentication, and the relay's token is missing or wrong (check `okiteru auth agent-set`)",
+ "err.agent_token_unreadable": "Cannot read the token for the agent: {detail}"
 }

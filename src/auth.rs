@@ -51,7 +51,7 @@ fn derive(pin: &str, salt: &[u8], iterations: u32) -> [u8; 32] {
 }
 
 /// 長さを比べてから、全体を読んで比べる(途中で止めない)。
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
@@ -135,25 +135,33 @@ pub fn load(path: &Path) -> Result<Option<AuthConfig>, String> {
 }
 
 pub fn save(path: &Path, config: &AuthConfig) -> Result<(), String> {
-    let text = serde_json::to_string_pretty(config).map_err(|e| e.to_string())?;
+    write_private(path, &serde_json::to_string_pretty(config).map_err(|e| e.to_string())?)
+}
+
+/// 秘密を含むファイルを、一時ファイル経由で書く(Unix では 0600)。
+pub fn write_private(path: &Path, text: &str) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(|e| format!("フォルダを作れません: {e}"))?;
     }
     let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, text).map_err(|e| format!("書き込めません: {e}"))?;
-    restrict(&tmp);
+    create_private(&tmp, text).map_err(|e| format!("書き込めません: {e}"))?;
     fs::rename(&tmp, path).map_err(|e| format!("書き込めません: {e}"))
 }
 
-/// 自分だけが読めるようにする(Unix)。Windows では、置き場所(ProgramData)の権限に従う。
+/// 自分だけが読めるファイルとして書く(Unix。作った時点から 0600)。Windows では、置き場所(ProgramData)の権限に従う。
 #[cfg(unix)]
-fn restrict(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+fn create_private(path: &Path, text: &str) -> io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let mut file = fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path)?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?; // 前から在った一時ファイルの権限も締める
+    file.write_all(text.as_bytes())
 }
 
 #[cfg(not(unix))]
-fn restrict(_: &Path) {}
+fn create_private(path: &Path, text: &str) -> io::Result<()> {
+    fs::write(path, text)
+}
 
 /// 認証の今の状態。ファイルが書き換わったら読み直す。
 pub enum Mode {
