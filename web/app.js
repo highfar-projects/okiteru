@@ -7,6 +7,7 @@ const POWER_LABELS = { hibernate: "休止状態", sleep: "スリープ", shutdow
 const $ = (selector) => document.querySelector(selector);
 
 let devices = [];
+let schedules = [];
 let timer = null;
 const waitingUntil = new Map(); // id -> 起動待ちの期限
 const sleepingUntil = new Map(); // id -> 停止待ちの期限
@@ -46,9 +47,15 @@ function createCard(id) {
   const edit = el("button", "", "設定");
   edit.type = "button";
   edit.addEventListener("click", () => openEdit(id));
-  head.append(name, edit);
+  const plan = el("button", "", "予約");
+  plan.type = "button";
+  plan.addEventListener("click", () => openSchedules(id));
+  const buttons = el("div", "buttons");
+  buttons.append(plan, edit);
+  head.append(name, buttons);
 
   const sub = el("p", "sub");
+  const next = el("p", "next");
   const state = el("div", "state");
   const label = el("span");
   state.append(el("span", "dot"), label);
@@ -61,8 +68,8 @@ function createCard(id) {
   const note = el("p", "note");
   note.setAttribute("role", "status");
 
-  li.append(head, sub, state, wake, sleep, note);
-  return { li, name, sub, state, label, wake, sleep, note };
+  li.append(head, sub, next, state, wake, sleep, note);
+  return { li, name, sub, next, state, label, wake, sleep, note };
 }
 
 function render() {
@@ -100,6 +107,9 @@ function render() {
 
     card.name.textContent = d.name;
     card.sub.textContent = `${d.ip} ・ 確認ポート ${d.check_port}`;
+    const upcoming = nextSchedule(d.id);
+    card.next.textContent = upcoming ? `次の予約: ${formatWhen(upcoming.next)}` : "";
+    card.next.hidden = !upcoming;
     card.state.classList.toggle("up", d.up);
     card.state.classList.toggle("waiting", waiting || sleeping);
     card.label.textContent = sleeping ? "お休みなさい…(お休み待ち)" : d.up ? "起きています" : waiting ? "起きてください…(起きるのを待っています)" : "お休み中です";
@@ -124,7 +134,7 @@ function render() {
 
 async function refresh() {
   try {
-    devices = await api("GET", "/api/devices");
+    [devices, schedules] = await Promise.all([api("GET", "/api/devices"), api("GET", "/api/schedules")]);
     $("#banner").hidden = true;
   } catch (e) {
     const banner = $("#banner");
@@ -176,6 +186,100 @@ function stop() {
 }
 
 document.addEventListener("visibilitychange", () => (document.hidden ? stop() : start()));
+
+// ---- 起動予約 ----
+
+const DAY_NAMES = ["月", "火", "水", "木", "金", "土", "日"];
+const scheduleDialog = $("#schedule-dialog");
+const scheduleForm = $("#schedule-form");
+let scheduleDeviceId = null;
+
+function nextSchedule(deviceId) {
+  const upcoming = schedules.filter((s) => s.device_id === deviceId && s.next);
+  upcoming.sort((a, b) => a.next.localeCompare(b.next));
+  return upcoming[0];
+}
+
+// "2026-11-03T07:30" → 「11/3(火) 07:30」
+function formatWhen(text) {
+  const [date, time] = text.split("T");
+  const [y, m, d] = date.split("-").map(Number);
+  const weekday = DAY_NAMES[(new Date(y, m - 1, d).getDay() + 6) % 7];
+  return `${m}/${d}(${weekday}) ${time}`;
+}
+
+function describeSchedule(s) {
+  if (s.repeat === "once") return `${s.date.replaceAll("-", "/")} に一度だけ`;
+  const days = s.days.join("") === "01234" ? "平日" : s.days.length === 7 ? "毎日" : s.days.map((d) => DAY_NAMES[d]).join("");
+  return `毎週 ${days}`;
+}
+
+function scheduleItem(s) {
+  const li = el("li", s.enabled ? "schedule" : "schedule off");
+  const info = el("div");
+  info.append(el("strong", "", s.time), el("span", "", describeSchedule(s) + (s.next ? ` ・ 次は ${formatWhen(s.next)}` : s.enabled ? "" : " ・ 止めています")));
+  const toggle = el("button", "", s.enabled ? "止める" : "再開");
+  toggle.type = "button";
+  toggle.addEventListener("click", () => changeSchedule(() => api("PATCH", `/api/schedules/${s.id}`, { enabled: !s.enabled })));
+  const remove = el("button", "danger", "削除");
+  remove.type = "button";
+  remove.addEventListener("click", () => {
+    if (confirm(`${s.time} の予約を削除しますか?`)) changeSchedule(() => api("DELETE", `/api/schedules/${s.id}`));
+  });
+  const buttons = el("div", "buttons");
+  buttons.append(toggle, remove);
+  li.append(info, buttons);
+  return li;
+}
+
+async function changeSchedule(action) {
+  try {
+    await action();
+    setNote($("#schedule-note"), "");
+  } catch (e) {
+    setNote($("#schedule-note"), e.message, true);
+  }
+  await refresh();
+  renderSchedules();
+}
+
+function renderSchedules() {
+  const mine = schedules.filter((s) => s.device_id === scheduleDeviceId);
+  $("#schedule-list").replaceChildren(...mine.map(scheduleItem));
+  $("#schedule-empty").hidden = mine.length > 0;
+}
+
+function openSchedules(id) {
+  const d = devices.find((x) => x.id === id);
+  if (!d) return;
+  scheduleDeviceId = id;
+  $("#schedule-title").textContent = `「${d.name}」の起動予約`;
+  setNote($("#schedule-note"), "");
+  renderSchedules();
+  scheduleDialog.showModal();
+}
+
+function syncRepeat() {
+  const once = scheduleForm.repeat.value === "once";
+  $("#schedule-days").hidden = once;
+  $("#schedule-date-label").hidden = !once;
+  scheduleForm.date.required = once;
+}
+
+scheduleForm.repeat.addEventListener("change", syncRepeat);
+
+scheduleForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const body = { device_id: scheduleDeviceId, time: scheduleForm.time.value };
+  if (scheduleForm.repeat.value === "once") {
+    body.date = scheduleForm.date.value;
+  } else {
+    body.days = [...scheduleForm.querySelectorAll("input[name=day]:checked")].map((c) => Number(c.value));
+  }
+  await changeSchedule(() => api("POST", "/api/schedules", body));
+});
+
+$("#close-schedule").addEventListener("click", () => scheduleDialog.close());
 
 // ---- 追加 ----
 

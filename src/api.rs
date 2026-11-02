@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::config::{ConfigError, Device, NewDevice, Patch, Store};
+use crate::schedule::ScheduleStore;
 use crate::power::Power;
 use crate::wol::Mac;
 use crate::tracker::{Event, Tracker};
@@ -125,7 +126,7 @@ fn probe(ip: Ipv4Addr, port: u16) -> bool {
     TcpStream::connect_timeout(&SocketAddr::new(ip.into(), port), PROBE_TIMEOUT).is_ok()
 }
 
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
@@ -176,14 +177,20 @@ fn config_error(e: ConfigError) -> Response {
 }
 
 pub struct App {
-    store: Mutex<Store>,
+    pub(crate) store: Mutex<Store>,
+    pub(crate) schedules: Mutex<ScheduleStore>,
     last_wake: Mutex<HashMap<u32, Instant>>,
     tracker: Mutex<Tracker>,
 }
 
 impl App {
-    pub fn new(store: Store) -> App {
-        App { store: Mutex::new(store), last_wake: Mutex::new(HashMap::new()), tracker: Mutex::new(Tracker::default()) }
+    pub fn new(store: Store, schedules: ScheduleStore) -> App {
+        App {
+            store: Mutex::new(store),
+            schedules: Mutex::new(schedules),
+            last_wake: Mutex::new(HashMap::new()),
+            tracker: Mutex::new(Tracker::default()),
+        }
     }
 
     pub fn handle(&self, req: &Request) -> Response {
@@ -205,6 +212,10 @@ impl App {
             ("POST", ["api", "devices", i, "wake"]) => id(i).map_or_else(not_found, |i| self.wake(i, req.peer)),
             ("POST", ["api", "devices", i, "sleep"]) => id(i).map_or_else(not_found, |i| self.sleep(i, req.peer)),
             ("GET", ["api", "candidates"]) => self.candidates(req.peer),
+            ("GET", ["api", "schedules"]) => self.list_schedules(),
+            ("POST", ["api", "schedules"]) => self.add_schedule(&req.body, req.peer),
+            ("PATCH", ["api", "schedules", i]) => id(i).map_or_else(not_found, |i| self.patch_schedule(i, &req.body, req.peer)),
+            ("DELETE", ["api", "schedules", i]) => id(i).map_or_else(not_found, |i| self.remove_schedule(i, req.peer)),
             _ => not_found(),
         }
     }
@@ -280,6 +291,9 @@ impl App {
             Ok(()) => {
                 lock(&self.last_wake).remove(&id);
                 lock(&self.tracker).forget(id);
+                if let Err(e) = lock(&self.schedules).remove_for_device(id) {
+                    log::line(&format!("機器の予約を消せませんでした: {e}"));
+                }
                 log::line(&format!("機器を削除しました: 「{}」(要求元 {peer})", name.unwrap_or_default()));
                 json_response(200, &json!({ "removed": id }))
             }
@@ -289,22 +303,30 @@ impl App {
 
     fn wake(&self, id: u32, peer: IpAddr) -> Response {
         let Some(device) = lock(&self.store).get(id).cloned() else { return not_found() };
+        match self.wake_device(&device, &peer.to_string()) {
+            Ok(nic_name) => json_response(200, &json!({ "sent": true, "nic": nic_name })),
+            Err((status, message)) => error(status, &message),
+        }
+    }
+
+    /// マジックパケットを送って記録する。手動の要求も予約も、ここを通る。`origin` はログに残す要求元。
+    pub(crate) fn wake_device(&self, device: &Device, origin: &str) -> Result<String, (u16, String)> {
         {
             let mut last = lock(&self.last_wake);
-            if last.get(&id).is_some_and(|t| t.elapsed() < WAKE_COOLDOWN) {
-                return error(429, "続けて送信できません。少し待ってください");
+            if last.get(&device.id).is_some_and(|t| t.elapsed() < WAKE_COOLDOWN) {
+                return Err((429, "続けて送信できません。少し待ってください".into()));
             }
-            last.insert(id, Instant::now());
+            last.insert(device.id, Instant::now());
         }
-        match send_wake(&device) {
+        match send_wake(device) {
             Ok(nic_name) => {
-                lock(&self.tracker).woke(id, Instant::now());
-                log::line(&format!("起動要求: 「{}」({})へ送信しました(NIC {nic_name}、要求元 {peer})", device.name, device.mac));
-                json_response(200, &json!({ "sent": true, "nic": nic_name }))
+                lock(&self.tracker).woke(device.id, Instant::now());
+                log::line(&format!("起動要求: 「{}」({})へ送信しました(NIC {nic_name}、要求元 {origin})", device.name, device.mac));
+                Ok(nic_name)
             }
             Err((status, message)) => {
-                log::line(&format!("起動要求に失敗: 「{}」: {message}(要求元 {peer})", device.name));
-                error(status, &message)
+                log::line(&format!("起動要求に失敗: 「{}」: {message}(要求元 {origin})", device.name));
+                Err((status, message))
             }
         }
     }
@@ -406,7 +428,7 @@ mod tests {
     fn app(tag: &str) -> App {
         let dir = std::env::temp_dir().join(format!("okiteru-api-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        App::new(Store::load(&dir.join("devices.json")).unwrap())
+        App::new(Store::load(&dir.join("devices.json")).unwrap(), ScheduleStore::load(&dir.join("schedules.json")).unwrap())
     }
 
     fn req(method: &str, target: &str, body: &str) -> Request {
