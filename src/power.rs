@@ -29,20 +29,28 @@ impl Power {
         }
     }
 
-    /// 実行するコマンド。Windows のスリープは、休止状態が有効だと休止状態になることがある(OS の仕様)。
-    pub fn command(self) -> (&'static str, &'static [&'static str]) {
+    /// 実行するコマンド。この OS で行えない操作は `None`。
+    /// Windows のスリープは、休止状態が有効だと休止状態になることがある(OS の仕様)。
+    /// macOS には、スリープとは別の「休止状態」の操作が無いので、休止状態は行えない。
+    pub fn command(self) -> Option<(&'static str, &'static [&'static str])> {
         if cfg!(windows) {
-            match self {
+            Some(match self {
                 Power::Hibernate => ("shutdown", &["/h"]),
                 Power::Sleep => ("rundll32.exe", &["powrprof.dll,SetSuspendState", "0,1,0"]),
                 Power::Shutdown => ("shutdown", &["/s", "/t", "0"]),
+            })
+        } else if cfg!(target_os = "macos") {
+            match self {
+                Power::Hibernate => None,
+                Power::Sleep => Some(("pmset", &["sleepnow"])),
+                Power::Shutdown => Some(("shutdown", &["-h", "now"])),
             }
         } else {
-            match self {
+            Some(match self {
                 Power::Hibernate => ("systemctl", &["hibernate"]),
                 Power::Sleep => ("systemctl", &["suspend"]),
                 Power::Shutdown => ("systemctl", &["poweroff"]),
-            }
+            })
         }
     }
 
@@ -50,7 +58,10 @@ impl Power {
     pub fn execute(self) {
         thread::spawn(move || {
             thread::sleep(DELAY);
-            let (program, args) = self.command();
+            let Some((program, args)) = self.command() else {
+                log::line(&format!("{}はこの OS では行えません", self.label()));
+                return;
+            };
             if env::var_os("OKITERU_DRY_RUN").is_some() {
                 log::line(&format!("{}を実行します(試運転のため実行しません): {program} {}", self.label(), args.join(" ")));
                 return;
@@ -83,16 +94,25 @@ mod tests {
     }
 
     #[test]
-    fn each_action_has_a_distinct_command() {
+    fn each_supported_action_has_a_distinct_command() {
         let all = [Power::Hibernate, Power::Sleep, Power::Shutdown];
-        for (i, a) in all.iter().enumerate() {
-            for b in &all[i + 1..] {
-                assert_ne!(a.command(), b.command());
+        let commands: Vec<_> = all.iter().filter_map(|p| p.command()).collect();
+        for (i, a) in commands.iter().enumerate() {
+            for b in &commands[i + 1..] {
+                assert_ne!(a, b);
             }
         }
         if cfg!(windows) {
-            assert_eq!(Power::Hibernate.command(), ("shutdown", &["/h"][..]));
-            assert_eq!(Power::Shutdown.command(), ("shutdown", &["/s", "/t", "0"][..]));
+            assert_eq!(Power::Hibernate.command(), Some(("shutdown", &["/h"][..])));
+            assert_eq!(Power::Shutdown.command(), Some(("shutdown", &["/s", "/t", "0"][..])));
+        } else if cfg!(target_os = "macos") {
+            assert_eq!(Power::Sleep.command(), Some(("pmset", &["sleepnow"][..])));
+            assert_eq!(Power::Shutdown.command(), Some(("shutdown", &["-h", "now"][..])));
+            assert_eq!(Power::Hibernate.command(), None);
+        } else {
+            assert_eq!(Power::Hibernate.command(), Some(("systemctl", &["hibernate"][..])));
+            assert_eq!(Power::Sleep.command(), Some(("systemctl", &["suspend"][..])));
+            assert_eq!(Power::Shutdown.command(), Some(("systemctl", &["poweroff"][..])));
         }
     }
 }

@@ -2,7 +2,7 @@
 
 Tailscale につなぐだけで、LAN 内の PC をスマホから起こして(Wake-on-LAN)、お休みさせて(休止・スリープ・シャットダウン)、様子を見られる中継ツールです。
 
-*English: a single-binary Wake-on-LAN relay for your tailnet. Install it on one always-on Windows PC with Tailscale, and wake, monitor and put to sleep your other LAN machines from your phone. No configuration; the LAN broadcast address, NIC and MAC addresses are found automatically. UI and docs are in Japanese.*
+*English: a single-binary Wake-on-LAN relay for your tailnet. Install it on one always-on PC (Windows; Linux and macOS are supported too, less tested) with Tailscale, and wake, monitor and put to sleep your other LAN machines from your phone. No configuration; the LAN broadcast address, NIC and MAC addresses are found automatically. UI and docs are in Japanese.*
 
 - **設定不要:** 送信元の NIC とブロードキャストアドレスは自動で求めます。起動中の機器は、tailnet の端末一覧と ARP から見つけて、選ぶだけで登録できます(MAC の手入力は不要)。
 - **複数台:** 機器の追加・削除・名前の変更は画面から。機器ごとに、起動の確認に使う TCP ポートを選べます。
@@ -31,7 +31,7 @@ Tailscale につなぐだけで、LAN 内の PC をスマホから起こして(W
 
 ## 必要なもの
 
-- 常時起動の Windows PC 1 台(中継)。Tailscale を入れ、LAN につないでおく
+- 常時起動の PC 1 台(中継)。Windows、Linux(x86_64・aarch64。ラズパイなど)、macOS に対応します。Tailscale を入れ、LAN につないでおく
 - スマホ(Tailscale を入れ、同じ tailnet に参加)
 - 起こす PC は **有線 LAN** でつなぎ、Wake-on-LAN を使える設定にする([下記](#起動される側の-pc-の設定))
 
@@ -53,6 +53,43 @@ Tailscale につなぐだけで、LAN 内の PC をスマホから起こして(W
 新しい版に入れ替えるときも、新しい `okiteru.exe` で同じ `install` を実行します(設定は残ります)。
 
 サービスは最小権限の `LocalService` で動きます。Tailscale の情報を読めないなど、権限が足りないときは `install --system` で `LocalSystem` に切り替えられます。
+
+## 導入(Linux)
+
+Linux は、中継も agent も使えます。**開発の環境(WSL2 上の Ubuntu)での前面実行は確かめていますが、systemd への登録は実機で通して確かめていません**(ユニットファイルは `systemd-analyze verify` を通ります)。
+
+1. [Releases](https://github.com/highfar-projects/okiteru/releases) から、環境に合う `okiteru-linux-x86_64` または `okiteru-linux-aarch64` をダウンロードして、実行権限をつける(`chmod +x`)。
+2. root 権限で登録する。
+
+   ```sh
+   sudo ./okiteru-linux-x86_64 install            # 中継
+   sudo ./okiteru-linux-x86_64 install --agent    # 起動される側(お休みなさいの受け口)
+   ```
+
+   実行ファイルを `/usr/local/bin/okiteru` にコピーし、systemd のサービス `okiteru`(agent は `okiteru-agent`)を登録して開始します。再起動後も自動で始まります。
+   設定とログは `/var/lib/okiteru/` に置きます。削除は `sudo okiteru uninstall`(agent は `--agent` を付ける)。
+3. 終わりに表示される `http://<この PC の Tailscale IP>:8765/` を、スマホで開く。
+
+- サービスは root で動きます。`tailscale` の操作用ソケットが root にしか開かれていないことが多く、agent は電源操作(`systemctl hibernate` / `suspend` / `poweroff`)に権限が要るためです。
+- 休止状態は、Linux 側で休止が使えるときだけ動きます(スワップの設定などが要ります)。使えないときは、スリープかシャットダウンを選んでください。
+- 起こされる側として使うときは、Wake-on-LAN を有効にします(`ethtool -s <NIC> wol g`。再起動すると戻るので、NetworkManager や systemd-networkd で永続化します)。
+
+## 導入(macOS)
+
+macOS も、中継と agent の両方に対応します。**macOS の実機では動作を確かめていません。** `cargo test` を macOS の CI で通すところまでです。
+
+1. [Releases](https://github.com/highfar-projects/okiteru/releases) から `okiteru-macos-aarch64`(Apple Silicon)をダウンロードして、実行権限をつける。初回は、Gatekeeper に止められたら「システム設定 → プライバシーとセキュリティ」から許可します(署名・公証はしていません)。
+2. root 権限で登録する。
+
+   ```sh
+   sudo ./okiteru-macos-aarch64 install            # 中継
+   sudo ./okiteru-macos-aarch64 install --agent    # 起動される側
+   ```
+
+   launchd のデーモン(`net.highfar.okiteru`・`net.highfar.okiteru-agent`)として登録します。設定とログは `/Library/Application Support/okiteru/` に置きます。
+3. Tailscale は、アプリ版(`/Applications/Tailscale.app`)をそのまま使えます。
+4. macOS には、スリープとは別の「休止状態」の操作がありません。agent の機器は、スリープかシャットダウンを選んでください(休止状態を選ぶと、相手が断ります)。
+5. 起こされる側の macOS は、「システム設定 → バッテリー(または省エネルギー)」の「ネットワークアクセスによるスリープ解除」を有効にします。
 
 ## スマホのホーム画面に追加(アプリとしてインストール)
 
@@ -126,6 +163,8 @@ Tailscale につなぐだけで、LAN 内の PC をスマホから起こして(W
 | ログ(中継) | `C:\ProgramData\okiteru\okiteru.log`(256KB で `.log.old` に切り替え。1 世代だけ残る) |
 | ログ(agent) | `C:\ProgramData\okiteru\okiteru-agent.log` |
 
+Linux・macOS では、サービスとして登録した場合は `/var/lib/okiteru/`(Linux)・`/Library/Application Support/okiteru/`(macOS)に、前面で実行した場合は `~/.config/okiteru/` に、同じ名前のファイルを置きます。
+
 ログには、起動要求・お休み要求、起動と停止の確認、機器の追加・変更・削除を、要求元の IP とともに記録します。**時刻は UTC** です(日本時間は +9 時間)。起動と停止の確認は 10 秒ごとなので、時間の精度も 10 秒程度です。
 
 ## うまくいかないとき
@@ -147,7 +186,8 @@ Tailscale につなぐだけで、LAN 内の PC をスマホから起こして(W
 
 ## 制限
 
-- 中継の Windows サービス登録は Windows 専用です。Linux では前面での実行(`okiteru`)だけできますが、動作は未検証で、サービス登録(systemd)は未対応です。
+- Linux と macOS は、Windows ほど確かめていません(上の「導入」を参照)。macOS の Intel 版の実行ファイルは配っていません(ソースからビルドできます)。
+- Windows 以外では、サービスは root で動きます。
 - IPv4 の LAN だけを対象にしています。
 - 起こす・止める相手は、中継と同じ LAN にいる機器です。
 
@@ -155,10 +195,12 @@ Tailscale につなぐだけで、LAN 内の PC をスマホから起こして(W
 
 Rust 1.88 以降が要ります。
 
-```powershell
+```sh
 cargo test
-cargo build --release   # target\release\okiteru.exe
+cargo build --release   # target/release/okiteru(Windows は okiteru.exe)
 ```
+
+CI は Windows・Linux・macOS で `cargo test` を通します。
 
 アイコン(PNG)は `python3 tools/make_icons.py` で `web/icon.svg` と同じ絵から作り直せます。
 

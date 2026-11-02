@@ -1,6 +1,6 @@
 name: release
 
-# v1.0.0 のようなタグを push すると、Windows 用の okiteru.exe を作って Releases に載せる。
+# v1.0.0 のようなタグを push すると、Windows・Linux・macOS 用の実行ファイルを作って Releases に載せる。
 on:
   push:
     tags: ["v*"]
@@ -9,8 +9,24 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    runs-on: windows-latest
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: windows-latest
+            built: target/release/okiteru.exe
+            asset: okiteru.exe
+          - os: ubuntu-latest
+            built: target/release/okiteru
+            asset: okiteru-linux-x86_64
+          - os: ubuntu-24.04-arm
+            built: target/release/okiteru
+            asset: okiteru-linux-aarch64
+          - os: macos-latest
+            built: target/release/okiteru
+            asset: okiteru-macos-aarch64
+    runs-on: ${{ matrix.os }}
     defaults:
       run:
         shell: bash
@@ -23,22 +39,44 @@ jobs:
           test "v$version" = "$GITHUB_REF_NAME" || { echo "タグ $GITHUB_REF_NAME と Cargo.toml の版 $version が違います"; exit 1; }
       - run: cargo test --locked
       - run: cargo build --release --locked
+      - name: 実行ファイルとチェックサムを用意する
+        run: |
+          mkdir dist
+          cp "${{ matrix.built }}" "dist/${{ matrix.asset }}"
+          cd dist
+          if command -v sha256sum >/dev/null; then
+            sha256sum "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
+          else
+            shasum -a 256 "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
       - name: リリースノートを CHANGELOG から取り出す
         run: |
           version=${GITHUB_REF_NAME#v}
           awk -v v="$version" '$1=="##" && $2==v {on=1; next} $1=="##" {on=0} on' CHANGELOG.md > notes.md
           test -s notes.md || { echo "CHANGELOG.md に $version の項目がありません"; exit 1; }
-      - name: チェックサムを作る
-        run: |
-          cp target/release/okiteru.exe okiteru.exe
-          sha256sum okiteru.exe > okiteru.exe.sha256
       - name: Releases に載せる(同じタグの Release があれば、中身を差し替える)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          ls -l dist
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" okiteru.exe okiteru.exe.sha256 --clobber
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
             gh release edit "$GITHUB_REF_NAME" --title "okiteru $GITHUB_REF_NAME" --notes-file notes.md
           else
-            gh release create "$GITHUB_REF_NAME" okiteru.exe okiteru.exe.sha256 --title "okiteru $GITHUB_REF_NAME" --notes-file notes.md
+            gh release create "$GITHUB_REF_NAME" dist/* --title "okiteru $GITHUB_REF_NAME" --notes-file notes.md
           fi

@@ -37,6 +37,10 @@ pub fn handle(req: &Request, run: &dyn Fn(Power)) -> Response {
                 return api::error(400, "リクエストの形式が正しくありません");
             };
             log::line(&format!("{}の要求を受けました(要求元 {})", body.action.label(), req.peer));
+            if body.action.command().is_none() {
+                log::line(&format!("{}はこの OS では行えないため、断りました", body.action.label()));
+                return api::error(501, &format!("この PC では{}を行えません。設定で別の操作を選んでください", body.action.label()));
+            }
             run(body.action);
             api::json_response(202, &json!({ "accepted": true }))
         }
