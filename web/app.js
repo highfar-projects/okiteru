@@ -289,6 +289,85 @@ scheduleForm.addEventListener("submit", async (event) => {
 
 $("#close-schedule").addEventListener("click", () => scheduleDialog.close());
 
+// ---- 通知(Web Push) ----
+
+const notifyButton = $("#notify");
+
+function pushUnsupportedReason() {
+  if (!window.isSecureContext) {
+    return "通知には HTTPS が必要です。`tailscale serve` で HTTPS にしてから開いてください(README を参照)";
+  }
+  if (!("serviceWorker" in navigator && "PushManager" in window && "Notification" in window)) {
+    return "このブラウザは通知に対応していません。iPhone では、ホーム画面に追加したアプリから開いてください";
+  }
+  return "";
+}
+
+function urlBase64ToBytes(text) {
+  const padded = text + "=".repeat((4 - (text.length % 4)) % 4);
+  const raw = atob(padded.replaceAll("-", "+").replaceAll("_", "/"));
+  return Uint8Array.from(raw, (c) => c.charCodeAt(0));
+}
+
+async function currentSubscription() {
+  const reg = await navigator.serviceWorker.getRegistration("/");
+  return reg ? reg.pushManager.getSubscription() : null;
+}
+
+async function refreshNotifyButton() {
+  let on = false;
+  if (!pushUnsupportedReason()) {
+    try {
+      on = Boolean(await currentSubscription()) && Notification.permission === "granted";
+    } catch {
+      on = false;
+    }
+  }
+  notifyButton.textContent = on ? "通知: オン" : "通知: オフ";
+  notifyButton.dataset.on = on ? "1" : "";
+}
+
+async function enableNotify() {
+  if ((await Notification.requestPermission()) !== "granted") {
+    throw new Error("通知が許可されませんでした。ブラウザの設定で、このサイトの通知を許可してください");
+  }
+  await navigator.serviceWorker.register("/sw.js");
+  const reg = await navigator.serviceWorker.ready;
+  const { key } = await api("GET", "/api/push/key");
+  const sub =
+    (await reg.pushManager.getSubscription()) ??
+    (await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToBytes(key) }));
+  await api("POST", "/api/push/subscribe", sub.toJSON());
+  setNote($("#notify-note"), "起きたとき、起きなかったときに通知します");
+}
+
+async function disableNotify() {
+  const sub = await currentSubscription();
+  if (!sub) return;
+  await api("POST", "/api/push/unsubscribe", { endpoint: sub.endpoint });
+  await sub.unsubscribe();
+  setNote($("#notify-note"), "");
+}
+
+notifyButton.addEventListener("click", async () => {
+  const reason = pushUnsupportedReason();
+  if (reason) {
+    setNote($("#notify-note"), reason, true);
+    return;
+  }
+  notifyButton.disabled = true;
+  try {
+    if (notifyButton.dataset.on) await disableNotify();
+    else await enableNotify();
+  } catch (e) {
+    setNote($("#notify-note"), e.message, true);
+  }
+  notifyButton.disabled = false;
+  await refreshNotifyButton();
+});
+
+refreshNotifyButton();
+
 // ---- 追加 ----
 
 const addDialog = $("#add-dialog");

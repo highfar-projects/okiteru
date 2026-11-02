@@ -16,11 +16,15 @@
 <body>
 <header>
   <h1>Okiteru?</h1>
-  <button id="open-add" type="button" class="primary">＋ 追加</button>
+  <div class="header-buttons">
+    <button id="notify" type="button">通知: オフ</button>
+    <button id="open-add" type="button" class="primary">＋ 追加</button>
+  </div>
 </header>
 
 <main>
   <p id="banner" class="banner" role="status" hidden></p>
+  <p id="notify-note" class="note" role="status"></p>
   <ul id="devices" class="devices"></ul>
   <p id="empty" class="empty" hidden>機器がまだありません。「＋ 追加」から、起動中の機器を探して登録します。</p>
 
