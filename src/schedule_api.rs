@@ -214,7 +214,7 @@ mod tests {
     fn app(tag: &str) -> App {
         let dir = std::env::temp_dir().join(format!("okiteru-schedule-api-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        App::new(Store::load(&dir.join("devices.json")).unwrap(), ScheduleStore::load(&dir.join("schedules.json")).unwrap(), PushStore::load(&dir.join("push.json")).unwrap())
+        App::new(Store::load(&dir.join("devices.json")).unwrap(), ScheduleStore::load(&dir.join("schedules.json")).unwrap(), PushStore::load(&dir.join("push.json")).unwrap(), crate::auth::AuthState::new(dir.join("auth.json")))
     }
 
     fn call(app: &App, method: &str, target: &str, body: &str) -> (u16, serde_json::Value) {
@@ -224,6 +224,7 @@ mod tests {
             host: Some("localhost:8765".into()),
             origin: None,
             content_type: (method != "GET").then(|| "application/json".to_string()),
+            cookie: None,
             peer: "127.0.0.1".parse().unwrap(),
             body: body.as_bytes().to_vec(),
         });

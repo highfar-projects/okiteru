@@ -18,6 +18,7 @@
   <h1>Okiteru?</h1>
   <div class="header-buttons">
     <button id="notify" type="button">通知: オフ</button>
+    <button id="logout" type="button" hidden>ログアウト</button>
     <button id="open-add" type="button" class="primary">＋ 追加</button>
   </div>
 </header>
@@ -119,6 +120,15 @@
     <button type="submit" class="primary wide">追加する</button>
   </form>
   <div class="actions"><button id="close-schedule" type="button">閉じる</button></div>
+</dialog>
+
+<dialog id="login-dialog">
+  <h2>ログイン</h2>
+  <form id="login-form">
+    <label>PIN<input name="pin" type="password" required autocomplete="current-password" autocapitalize="off" spellcheck="false"></label>
+    <p id="login-note" class="note" role="alert"></p>
+    <button type="submit" class="primary wide">ログイン</button>
+  </form>
 </dialog>
 
 <dialog id="confirm-dialog">

@@ -128,6 +128,7 @@ mod tests {
             Store::load(&dir.join("devices.json")).unwrap(),
             ScheduleStore::load(&dir.join("schedules.json")).unwrap(),
             PushStore::load(&dir.join("push.json")).unwrap(),
+            crate::auth::AuthState::new(dir.join("auth.json")),
         )
     }
 
@@ -138,6 +139,7 @@ mod tests {
             host: Some("localhost:8765".into()),
             origin: None,
             content_type: (method != "GET").then(|| "application/json".to_string()),
+            cookie: None,
             peer: "127.0.0.1".parse().unwrap(),
             body: body.as_bytes().to_vec(),
         });
