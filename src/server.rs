@@ -40,7 +40,7 @@ fn respond(handler: &Handler, mut request: tiny_http::Request) {
     let mut body = Vec::new();
     let read = request.as_reader().take(MAX_BODY as u64 + 1).read_to_end(&mut body);
     let response = if read.is_err() || body.len() > MAX_BODY {
-        api::error(413, "リクエストが大きすぎます")
+        api::coded(413, "too_large", "リクエストが大きすぎます", &[])
     } else {
         handler(&api::Request {
             method: request.method().as_str().to_string(),

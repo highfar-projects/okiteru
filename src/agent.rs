@@ -34,24 +34,46 @@ pub fn handle(req: &Request, run: &dyn Fn(Power)) -> Response {
     match (req.method.as_str(), path) {
         ("POST", "/api/power") => {
             let Ok(body) = serde_json::from_slice::<PowerBody>(&req.body) else {
-                return api::error(400, "リクエストの形式が正しくありません");
+                return api::bad_body();
             };
             log::line(&format!("{}の要求を受けました(要求元 {})", body.action.label(), req.peer));
             if body.action.command().is_none() {
                 log::line(&format!("{}はこの OS では行えないため、断りました", body.action.label()));
-                return api::error(501, &format!("この PC では{}を行えません。設定で別の操作を選んでください", body.action.label()));
+                let action = serde_json::to_value(body.action).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
+                return api::coded(501, "action_unsupported", &format!("この PC では{}を行えません。設定で別の操作を選んでください", body.action.label()), &[("action", action)]);
             }
             run(body.action);
             api::json_response(202, &json!({ "accepted": true }))
         }
-        _ => api::error(404, "見つかりません"),
+        _ => api::not_found(),
+    }
+}
+
+/// 相手に頼めなかった理由。`reason` と `action` は、相手の agent が返した種類と補足(あれば)。
+#[derive(Debug)]
+pub struct Failure {
+    pub detail: String,
+    pub reason: Option<String>,
+    pub action: Option<String>,
+    text: String,
+}
+
+impl Failure {
+    fn plain(text: String) -> Failure {
+        Failure { detail: String::new(), reason: None, action: None, text }
+    }
+}
+
+impl std::fmt::Display for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.text)
     }
 }
 
 /// 相手の受け口に電源操作を頼む。
-pub fn request(addr: SocketAddr, power: Power) -> Result<(), String> {
+pub fn request(addr: SocketAddr, power: Power) -> Result<(), Failure> {
     let mut stream = TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT)
-        .map_err(|e| format!("相手の okiteru(agent)に接続できません: {e}"))?;
+        .map_err(|e| Failure { detail: e.to_string(), reason: Some("connect".into()), ..Failure::plain(format!("相手の okiteru(agent)に接続できません: {e}")) })?;
     let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
     let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
     let body = json!({ "action": power }).to_string();
@@ -59,21 +81,21 @@ pub fn request(addr: SocketAddr, power: Power) -> Result<(), String> {
         "POST /api/power HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
-    stream.write_all(message.as_bytes()).map_err(|e| format!("送信に失敗しました: {e}"))?;
+    stream.write_all(message.as_bytes()).map_err(|e| Failure { detail: e.to_string(), reason: Some("send".into()), ..Failure::plain(format!("送信に失敗しました: {e}")) })?;
 
     let mut raw = Vec::new();
     let _ = stream.take(MAX_RESPONSE).read_to_end(&mut raw);
     let text = String::from_utf8_lossy(&raw);
-    let status: u16 = text.split_whitespace().nth(1).and_then(|s| s.parse().ok()).ok_or("相手の応答を読めません")?;
+    let status: u16 = text.split_whitespace().nth(1).and_then(|s| s.parse().ok())
+        .ok_or_else(|| Failure { reason: Some("response".into()), ..Failure::plain("相手の応答を読めません".into()) })?;
     if (200..300).contains(&status) {
         return Ok(());
     }
-    let detail = text
-        .split_once("\r\n\r\n")
-        .and_then(|(_, b)| serde_json::from_str::<serde_json::Value>(b).ok())
-        .and_then(|v| v["error"].as_str().map(str::to_string))
-        .unwrap_or_else(|| format!("状態コード {status}"));
-    Err(format!("相手が受け付けませんでした: {detail}"))
+    let body = text.split_once("\r\n\r\n").and_then(|(_, b)| serde_json::from_str::<serde_json::Value>(b).ok());
+    let detail = body.as_ref().and_then(|v| v["error"].as_str().map(str::to_string)).unwrap_or_else(|| format!("状態コード {status}"));
+    let reason = body.as_ref().and_then(|v| v["code"].as_str().map(str::to_string));
+    let action = body.as_ref().and_then(|v| v["params"]["action"].as_str().map(str::to_string));
+    Err(Failure { detail: detail.clone(), reason, action, text: format!("相手が受け付けませんでした: {detail}") })
 }
 
 #[cfg(test)]
@@ -155,7 +177,7 @@ mod tests {
     #[test]
     fn client_sends_the_action_and_accepts_2xx() {
         let (addr, seen) = fake_agent("HTTP/1.1 202 Accepted\r\nContent-Length: 2\r\n\r\n{}");
-        assert_eq!(request(addr, Power::Shutdown), Ok(()));
+        assert!(request(addr, Power::Shutdown).is_ok());
         let sent = seen.join().unwrap();
         assert!(sent.starts_with("POST /api/power HTTP/1.1\r\n"), "{sent}");
         assert!(sent.contains("Content-Type: application/json"));
@@ -166,9 +188,9 @@ mod tests {
     fn client_reports_refusals_and_unreachable_peers() {
         let (addr, _) = fake_agent("HTTP/1.1 403 Forbidden\r\nContent-Length: 20\r\n\r\n{\"error\":\"だめです\"}");
         let err = request(addr, Power::Sleep).unwrap_err();
-        assert!(err.contains("だめです"), "{err}");
+        assert!(err.to_string().contains("だめです"), "{err}");
 
         let closed = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap(); // 閉じた直後のポート
-        assert!(request(closed, Power::Sleep).unwrap_err().contains("接続できません"));
+        assert!(request(closed, Power::Sleep).unwrap_err().to_string().contains("接続できません"));
     }
 }

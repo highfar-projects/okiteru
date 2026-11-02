@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::config::{ConfigError, Device, NewDevice, Patch, Store};
+use crate::config::{ConfigError, Detail, Device, NewDevice, Patch, Store};
 use crate::auth::AuthState;
 use crate::push::PushStore;
 use crate::retry::{Retries, Step};
@@ -72,6 +72,9 @@ fn asset(path: &str) -> Option<(&'static str, &'static [u8])> {
     Some(match path {
         "/" | "/index.html" => ("text/html; charset=utf-8", include_bytes!("../web/index.html")),
         "/app.js" => ("text/javascript; charset=utf-8", include_bytes!("../web/app.js")),
+        "/i18n.js" => ("text/javascript; charset=utf-8", include_bytes!("../web/i18n.js")),
+        "/lang/ja.json" => ("application/json; charset=utf-8", include_bytes!("../web/lang/ja.json")),
+        "/lang/en.json" => ("application/json; charset=utf-8", include_bytes!("../web/lang/en.json")),
         "/sw.js" => ("text/javascript; charset=utf-8", include_bytes!("../web/sw.js")),
         "/style.css" => ("text/css; charset=utf-8", include_bytes!("../web/style.css")),
         "/manifest.webmanifest" => ("application/manifest+json", include_bytes!("../web/manifest.webmanifest")),
@@ -84,8 +87,25 @@ fn asset(path: &str) -> Option<(&'static str, &'static [u8])> {
     })
 }
 
+/// 文だけのエラー(画面では、そのまま表示される)。
 pub fn error(status: u16, message: &str) -> Response {
     json_response(status, &json!({ "error": message }))
+}
+
+/// 種類を表す `code` と補足の値 `params` つきのエラー。画面は `code` から選んだ言語の文を作り、
+/// 知らない `code` のときは `error`(日本語の文)をそのまま表示する。
+pub fn coded(status: u16, code: &str, message: &str, params: &[(&str, String)]) -> Response {
+    let params: serde_json::Map<String, serde_json::Value> =
+        params.iter().map(|(k, v)| ((*k).to_string(), json!(v))).collect();
+    json_response(status, &json!({ "error": message, "code": code, "params": params }))
+}
+
+pub(crate) fn from_detail(status: u16, d: &Detail) -> Response {
+    if d.code.is_empty() {
+        return error(status, &d.text);
+    }
+    let params: Vec<_> = d.params.iter().map(|(k, v)| (*k, v.clone())).collect();
+    coded(status, d.code, &d.text, &params)
 }
 
 fn peer_allowed(ip: IpAddr) -> bool {
@@ -119,22 +139,22 @@ fn origin_matches(origin: &str, host: &str) -> bool {
 /// 問題があれば、返すべきエラー応答を返す。
 pub fn guard(req: &Request) -> Option<Response> {
     if !peer_allowed(req.peer) {
-        return Some(error(403, "このアドレスからは使えません"));
+        return Some(coded(403, "forbidden_peer", "このアドレスからは使えません", &[]));
     }
     let Some(host) = req.host.as_deref().filter(|h| host_allowed(h)) else {
-        return Some(error(403, "このホスト名ではアクセスできません"));
+        return Some(coded(403, "forbidden_host", "このホスト名ではアクセスできません", &[]));
     };
     if let Some(origin) = &req.origin
         && !origin_matches(origin, host) {
-            return Some(error(403, "別のサイトからの操作は受け付けません"));
+            return Some(coded(403, "forbidden_origin", "別のサイトからの操作は受け付けません", &[]));
         }
     match req.method.as_str() {
         "GET" => None,
         "POST" | "PATCH" | "DELETE" => {
             let json = req.content_type.as_deref().is_some_and(|c| c.to_ascii_lowercase().starts_with("application/json"));
-            (!json).then(|| error(415, "Content-Type は application/json にしてください"))
+            (!json).then(|| coded(415, "bad_content_type", "Content-Type は application/json にしてください", &[]))
         }
-        _ => Some(error(405, "このメソッドは使えません")),
+        _ => Some(coded(405, "bad_method", "このメソッドは使えません", &[])),
     }
 }
 
@@ -194,9 +214,9 @@ struct CandidateView {
 
 fn config_error(e: ConfigError) -> Response {
     match e {
-        ConfigError::Invalid(m) => error(400, &m),
-        ConfigError::Duplicate(m) => error(409, &m),
-        ConfigError::NotFound => error(404, "機器が見つかりません"),
+        ConfigError::Invalid(m) => from_detail(400, &m),
+        ConfigError::Duplicate(m) => from_detail(409, &m),
+        ConfigError::NotFound => coded(404, "device_not_found", "機器が見つかりません", &[]),
         ConfigError::Io(_) => error(500, &e.to_string()),
     }
 }
@@ -312,7 +332,7 @@ impl App {
                         "起動要求を再送しました: 「{}」({}回目、NIC {nic_name})まだ起動を確認できません",
                         device.name, attempt
                     )),
-                    Err((_, message)) => log::line(&format!("起動要求の再送に失敗: 「{}」({}回目): {message}", device.name, attempt)),
+                    Err((_, message)) => log::line(&format!("起動要求の再送に失敗: 「{}」({}回目): {}", device.name, attempt, message.text)),
                 },
                 Step::GiveUp { sent } => {
                     log::line(&format!("「{}」は起きませんでした(起動要求を {sent} 回送りました)", device.name));
@@ -344,7 +364,7 @@ impl App {
             Some("") => Some(None),
             Some(text) => match text.parse() {
                 Ok(ip) => Some(Some(ip)),
-                Err(_) => return error(400, "Tailscale の IP アドレスが正しくありません"),
+                Err(_) => return coded(400, "tailnet_ip_invalid", "Tailscale の IP アドレスが正しくありません", &[]),
             },
         };
         let patch = Patch { name: b.name, mac: b.mac, ip: b.ip, check_port: b.check_port, tailnet_ip, power: b.power };
@@ -382,16 +402,16 @@ impl App {
         let Some(device) = lock(&self.store).get(id).cloned() else { return not_found() };
         match self.wake_device(&device, &peer.to_string()) {
             Ok(nic_name) => json_response(200, &json!({ "sent": true, "nic": nic_name })),
-            Err((status, message)) => error(status, &message),
+            Err((status, detail)) => from_detail(status, &detail),
         }
     }
 
     /// マジックパケットを送って記録する。手動の要求も予約も、ここを通る。`origin` はログに残す要求元。
-    pub(crate) fn wake_device(&self, device: &Device, origin: &str) -> Result<String, (u16, String)> {
+    pub(crate) fn wake_device(&self, device: &Device, origin: &str) -> Result<String, (u16, Detail)> {
         {
             let mut last = lock(&self.last_wake);
             if last.get(&device.id).is_some_and(|t| t.elapsed() < WAKE_COOLDOWN) {
-                return Err((429, "続けて送信できません。少し待ってください".into()));
+                return Err((429, Detail::new("wake_cooldown", "続けて送信できません。少し待ってください")));
             }
             last.insert(device.id, Instant::now());
         }
@@ -402,9 +422,9 @@ impl App {
                 log::line(&format!("起動要求: 「{}」({})へ送信しました(NIC {nic_name}、要求元 {origin})", device.name, device.mac));
                 Ok(nic_name)
             }
-            Err((status, message)) => {
-                log::line(&format!("起動要求に失敗: 「{}」: {message}(要求元 {origin})", device.name));
-                Err((status, message))
+            Err((status, detail)) => {
+                log::line(&format!("起動要求に失敗: 「{}」: {}(要求元 {origin})", device.name, detail.text));
+                Err((status, detail))
             }
         }
     }
@@ -413,7 +433,7 @@ impl App {
     fn sleep(&self, id: u32, peer: IpAddr) -> Response {
         let Some(device) = lock(&self.store).get(id).cloned() else { return not_found() };
         let Some(ip) = device.tailnet_ip else {
-            return error(409, "この機器の Tailscale の IP アドレスが未設定です。設定で入力してください");
+            return coded(409, "tailnet_ip_unset", "この機器の Tailscale の IP アドレスが未設定です。設定で入力してください", &[]);
         };
         let action = device.power.label();
         match agent::request(SocketAddr::new(ip.into(), agent::PORT), device.power) {
@@ -425,7 +445,7 @@ impl App {
             }
             Err(message) => {
                 log::line(&format!("お休み要求に失敗: 「{}」({action}): {message}(要求元 {peer})", device.name));
-                error(502, &message)
+                agent_failure(&message)
             }
         }
     }
@@ -433,14 +453,14 @@ impl App {
     fn candidates(&self, peer: IpAddr) -> Response {
         let nic = match nic::detect() {
             Ok(Some(n)) => n,
-            Ok(None) => return error(503, "LAN 側の NIC が見つかりません"),
-            Err(e) => return error(500, &format!("NIC の取得に失敗しました: {e}")),
+            Ok(None) => return coded(503, "nic_missing", "LAN 側の NIC が見つかりません", &[]),
+            Err(e) => return coded(500, "nic_failed", &format!("NIC の取得に失敗しました: {e}"), &[("detail", e.to_string())]),
         };
         let found = match discovery::scan(&nic) {
             Ok(f) => f,
             Err(e) => {
                 log::line(&format!("候補の検出に失敗: tailscale を実行できませんでした: {e}(要求元 {peer})"));
-                return error(502, &format!("tailscale を実行できませんでした: {e}"));
+                return coded(502, "tailscale_failed", &format!("tailscale を実行できませんでした: {e}"), &[("detail", e.to_string())]);
             }
         };
         log::line(&format!("候補の検出: {} 台見つかりました(要求元 {peer})", found.len()));
@@ -457,16 +477,17 @@ impl App {
 }
 
 /// マジックパケットを送る。成功したら使った NIC の名前、失敗したら (状態コード, 理由)。
-fn send_wake(device: &Device) -> Result<String, (u16, String)> {
+fn send_wake(device: &Device) -> Result<String, (u16, Detail)> {
     let nic = match nic::detect() {
         Ok(Some(n)) => n,
-        Ok(None) => return Err((503, "LAN 側の NIC が見つかりません".into())),
-        Err(e) => return Err((500, format!("NIC の取得に失敗しました: {e}"))),
+        Ok(None) => return Err((503, Detail::new("nic_missing", "LAN 側の NIC が見つかりません"))),
+        Err(e) => return Err((500, Detail::new("nic_failed", format!("NIC の取得に失敗しました: {e}")).with("detail", e))),
     };
     if !nic.contains(device.ip) {
-        return Err((409, format!("この機器は送信元 NIC({})のサブネットにありません", nic.name)));
+        return Err((409, Detail::new("nic_subnet", format!("この機器は送信元 NIC({})のサブネットにありません", nic.name)).with("nic", &nic.name)));
     }
-    wol::send(device.mac, &nic).map_err(|e| (502, format!("マジックパケットを送れませんでした: {e}")))?;
+    wol::send(device.mac, &nic)
+        .map_err(|e| (502, Detail::new("wol_failed", format!("マジックパケットを送れませんでした: {e}")).with("detail", e)))?;
     Ok(nic.name)
 }
 
@@ -492,12 +513,24 @@ fn tailnet_note(device: &Device) -> String {
     device.tailnet_ip.map_or_else(String::new, |ip| format!(" agent={ip}"))
 }
 
-fn not_found() -> Response {
-    error(404, "見つかりません")
+pub(crate) fn not_found() -> Response {
+    coded(404, "not_found", "見つかりません", &[])
 }
 
-fn bad_body() -> Response {
-    error(400, "リクエストの形式が正しくありません")
+pub(crate) fn bad_body() -> Response {
+    coded(400, "bad_request", "リクエストの形式が正しくありません", &[])
+}
+
+/// 相手の agent に頼めなかったときの応答。agent が返した種類(`reason`)も画面へ渡す。
+fn agent_failure(failure: &agent::Failure) -> Response {
+    let mut params = vec![("detail", failure.detail.clone())];
+    if let Some(reason) = &failure.reason {
+        params.push(("reason", reason.clone()));
+    }
+    if let Some(action) = &failure.action {
+        params.push(("action", action.clone()));
+    }
+    coded(502, "agent_failed", &failure.to_string(), &params)
 }
 
 #[cfg(test)]
@@ -608,6 +641,9 @@ mod tests {
         for (path, content_type) in [
             ("/", "text/html"),
             ("/app.js", "text/javascript"),
+            ("/i18n.js", "text/javascript"),
+            ("/lang/ja.json", "application/json"),
+            ("/lang/en.json", "application/json"),
             ("/style.css", "text/css"),
             ("/manifest.webmanifest", "application/manifest+json"),
             ("/icon.svg", "image/svg+xml"),
@@ -662,11 +698,135 @@ mod tests {
         }
     }
 
+    fn dictionary(text: &str) -> std::collections::BTreeMap<String, String> {
+        serde_json::from_str(text).expect("辞書は文字列から文字列への JSON")
+    }
+
+    /// `{name}` の形の差し込み先の名前を集める。
+    fn placeholders(text: &str) -> std::collections::BTreeSet<String> {
+        let mut found = std::collections::BTreeSet::new();
+        let mut rest = text;
+        while let Some(start) = rest.find('{') {
+            let Some(end) = rest[start..].find('}') else { break };
+            found.insert(rest[start + 1..start + end].to_string());
+            rest = &rest[start + end + 1..];
+        }
+        found
+    }
+
+    /// `marker` のあとの "..." を全部拾う(HTML の属性や JS の呼び出しの文字列)。
+    fn quoted_after(source: &str, marker: &str) -> Vec<String> {
+        source
+            .match_indices(marker)
+            .filter_map(|(at, _)| {
+                let rest = &source[at + marker.len()..];
+                let rest = rest.strip_prefix('"')?;
+                rest.split('"').next().map(str::to_string)
+            })
+            .collect()
+    }
+
+    /// 言語どうしで、キーと差し込み先がそろっていること(翻訳の抜けを検出する)。
+    #[test]
+    fn dictionaries_have_the_same_keys() {
+        let ja = dictionary(include_str!("../web/lang/ja.json"));
+        let en = dictionary(include_str!("../web/lang/en.json"));
+        let missing: Vec<_> = ja.keys().filter(|k| !en.contains_key(*k)).collect();
+        let extra: Vec<_> = en.keys().filter(|k| !ja.contains_key(*k)).collect();
+        assert!(missing.is_empty(), "en にありません: {missing:?}");
+        assert!(extra.is_empty(), "ja にありません: {extra:?}");
+        for (key, text) in &ja {
+            assert!(!text.is_empty() || key == "sched.days_sep", "{key} が空です");
+            assert!(!en[key].is_empty() || key == "sched.days_sep", "{key} が空です(en)");
+            assert_eq!(placeholders(text), placeholders(&en[key]), "{key} の {{...}} が言語でそろっていません");
+        }
+    }
+
+    /// 画面が引くキーが、すべて辞書にあること。
+    #[test]
+    fn every_key_used_by_the_ui_is_defined() {
+        let ja = dictionary(include_str!("../web/lang/ja.json"));
+        let html = include_str!("../web/index.html");
+        let js = include_str!("../web/app.js");
+        let mut used = Vec::new();
+        for attr in ["data-i18n=", "data-i18n-label=", "data-i18n-placeholder=", "data-i18n-aria="] {
+            used.extend(quoted_after(html, attr));
+        }
+        used.extend(quoted_after(js, " t("));
+        used.extend(quoted_after(js, "(t("));
+        used.extend(quoted_after(js, "{t("));
+        assert!(used.len() > 60, "キーを拾えていません: {}", used.len());
+        for key in used {
+            assert!(ja.contains_key(&key), "辞書にないキー: {key}");
+        }
+        for i in 0..7 {
+            assert!(ja.contains_key(&format!("day.{i}")));
+        }
+        for p in ["hibernate", "sleep", "shutdown"] {
+            assert!(ja.contains_key(&format!("power.{p}")));
+        }
+    }
+
+    /// サーバーが返すエラーの種類(code)が、すべて辞書にあること。新しい code を足して辞書を忘れると落ちる。
+    #[test]
+    fn every_error_code_has_a_translation() {
+        let ja = dictionary(include_str!("../web/lang/ja.json"));
+        let sources = [
+            include_str!("api.rs"),
+            include_str!("agent.rs"),
+            include_str!("auth_api.rs"),
+            include_str!("schedule_api.rs"),
+            include_str!("server.rs"),
+            include_str!("config.rs"),
+            include_str!("schedule.rs"),
+            include_str!("push.rs"),
+        ];
+        let mut codes = std::collections::BTreeSet::new();
+        for source in sources {
+            let source = source.split("#[cfg(test)]").next().unwrap_or(source); // テスト自身の文字列は数えない
+            for (at, _) in source.match_indices("coded(") {
+                let rest = &source[at + "coded(".len()..];
+                let Some((status, after)) = rest.split_once(',') else { continue };
+                if status.len() == 3
+                    && status.bytes().all(|b| b.is_ascii_digit())
+                    && let Some(code) = after.trim_start().strip_prefix('"').and_then(|r| r.split('"').next())
+                {
+                    codes.insert(code.to_string());
+                }
+            }
+            codes.extend(quoted_after(source, "Detail::new("));
+        }
+        assert!(codes.len() > 30, "code を拾えていません: {}", codes.len());
+        for code in codes {
+            assert!(ja.contains_key(&format!("err.{code}")), "err.{code} が辞書にありません");
+        }
+    }
+
+    /// エラー応答は、文(error)と一緒に種類(code)と補足(params)を返す。
+    #[test]
+    fn errors_carry_a_code_and_params() {
+        let app = app("codes");
+        let r = app.handle(&req("GET", "/api/nothing", ""));
+        let v = body_json(&r);
+        assert_eq!((r.status, v["code"].as_str()), (404, Some("not_found")));
+        assert!(v["error"].as_str().is_some_and(|m| !m.is_empty()));
+
+        let r = app.handle(&req("POST", "/api/devices", r#"{"name":"","mac":"aa:bb:cc:dd:ee:ff","ip":"192.168.0.10"}"#));
+        let v = body_json(&r);
+        assert_eq!((r.status, v["code"].as_str(), v["params"]["max"].as_str()), (400, Some("name_length"), Some("64")));
+
+        app.handle(&req("POST", "/api/devices", ADD));
+        let r = app.handle(&req("POST", "/api/devices", ADD));
+        let v = body_json(&r);
+        assert_eq!((r.status, v["code"].as_str()), (409, Some("mac_duplicate")));
+        assert!(v["params"]["name"].as_str().is_some());
+    }
+
     /// 画面は CSP(インラインのスクリプト・スタイルを禁止)の下で動かすので、それを破る書き方をしていないか見る。
     #[test]
     fn web_ui_is_csp_clean() {
         let html = include_str!("../web/index.html");
-        let js = include_str!("../web/app.js");
+        let js = include_str!("../web/app.js").to_string() + include_str!("../web/i18n.js");
         assert!(!html.contains(" style="));
         assert!(!html.contains("<style"));
         assert!(!html.contains("onclick=") && !html.contains("onsubmit="));

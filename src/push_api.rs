@@ -41,7 +41,7 @@ struct UnsubscribeBody {
 }
 
 fn bad_body() -> Response {
-    error(400, "リクエストの形式が正しくありません")
+    crate::api::bad_body()
 }
 
 impl App {
@@ -57,7 +57,7 @@ impl App {
                 log::line(&format!("通知の購読を追加しました(要求元 {peer})"));
                 json_response(200, &json!({ "subscribed": true }))
             }
-            Err(ConfigError::Invalid(m)) => error(400, &m),
+            Err(ConfigError::Invalid(m)) => crate::api::from_detail(400, &m),
             Err(e) => error(500, &e.to_string()),
         }
     }

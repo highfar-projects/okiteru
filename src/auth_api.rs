@@ -13,7 +13,7 @@ use std::time::Instant;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::api::{App, Request, Response, error, json_response, lock};
+use crate::api::{App, Request, Response, bad_body, coded, json_response, lock};
 use crate::auth::{self, AuthConfig, Mode};
 use crate::log;
 
@@ -28,7 +28,7 @@ fn authenticated(config: &AuthConfig, req: &Request) -> bool {
 }
 
 fn broken(message: &str) -> Response {
-    error(503, &format!("認証の設定を読めないため、すべて断っています: {message}"))
+    coded(503, "auth_unavailable", &format!("認証の設定を読めないため、すべて断っています: {message}"), &[("detail", message.to_string())])
 }
 
 impl App {
@@ -40,7 +40,7 @@ impl App {
         match lock(&self.auth).mode() {
             Mode::Off => None,
             Mode::Broken(message) => Some(broken(message)),
-            Mode::On(config) => (!authenticated(config, req)).then(|| error(401, "ログインが必要です")),
+            Mode::On(config) => (!authenticated(config, req)).then(|| coded(401, "login_required", "ログインが必要です", &[])),
         }
     }
 
@@ -54,7 +54,7 @@ impl App {
     }
 
     pub(crate) fn login(&self, body: &[u8], peer: IpAddr) -> Response {
-        let Ok(b) = serde_json::from_slice::<LoginBody>(body) else { return error(400, "リクエストの形式が正しくありません") };
+        let Ok(b) = serde_json::from_slice::<LoginBody>(body) else { return bad_body() };
         // 検査の間は鍵を持ったままにする。同時に何度も試されても、数えそこねない
         let mut state = lock(&self.auth);
         let config = match state.mode() {
@@ -65,12 +65,12 @@ impl App {
         let now = Instant::now();
         if let Some(secs) = state.throttle.locked_for(now) {
             log::line(&format!("ログインを止めています(要求元 {peer})"));
-            return error(429, &format!("失敗が続いたため、ログインを止めています。あと {secs} 秒ほど待ってください"));
+            return coded(429, "login_locked", &format!("失敗が続いたため、ログインを止めています。あと {secs} 秒ほど待ってください"), &[("secs", secs.to_string())]);
         }
         if !config.verify_pin(&b.pin) {
             state.throttle.failed(now);
             log::line(&format!("ログインに失敗しました(要求元 {peer})"));
-            return error(401, "PIN が違います");
+            return coded(401, "wrong_pin", "PIN が違います", &[]);
         }
         state.throttle.succeeded();
         log::line(&format!("ログインしました(要求元 {peer})"));

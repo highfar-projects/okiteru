@@ -11,7 +11,7 @@ use chrono::{Local, NaiveDate, NaiveDateTime, NaiveTime};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::api::{App, Response, error, json_response, lock};
+use crate::api::{App, Response, bad_body, coded, error, from_detail, json_response, lock};
 use crate::config::ConfigError;
 use crate::log;
 use crate::schedule::{NewSchedule, Repeat, Schedule, SchedulePatch};
@@ -76,17 +76,17 @@ fn view(s: &Schedule, now: NaiveDateTime) -> ScheduleView {
 }
 
 fn parse_time(text: &str) -> Result<NaiveTime, Response> {
-    NaiveTime::parse_from_str(text.trim(), TIME_FORMAT).map_err(|_| error(400, "時刻は 07:30 のように指定してください"))
+    NaiveTime::parse_from_str(text.trim(), TIME_FORMAT).map_err(|_| coded(400, "bad_time", "時刻は 07:30 のように指定してください", &[]))
 }
 
 fn parse_date(text: &str) -> Result<NaiveDate, Response> {
-    NaiveDate::parse_from_str(text.trim(), DATE_FORMAT).map_err(|_| error(400, "日付は 2026-11-03 のように指定してください"))
+    NaiveDate::parse_from_str(text.trim(), DATE_FORMAT).map_err(|_| coded(400, "bad_date", "日付は 2026-11-03 のように指定してください", &[]))
 }
 
 /// `days` か `date` のどちらか一方から繰り返しを作る。どちらも無ければ `None`。
 fn parse_repeat(days: Option<Vec<u8>>, date: Option<String>) -> Result<Option<Repeat>, Response> {
     match (days, date) {
-        (Some(_), Some(_)) => Err(error(400, "曜日と日付は、どちらか一方だけを指定してください")),
+        (Some(_), Some(_)) => Err(coded(400, "days_and_date", "曜日と日付は、どちらか一方だけを指定してください", &[])),
         (Some(days), None) => Ok(Some(Repeat::Weekly { days })),
         (None, Some(date)) => Ok(Some(Repeat::Once { date: parse_date(&date)? })),
         (None, None) => Ok(None),
@@ -95,9 +95,9 @@ fn parse_repeat(days: Option<Vec<u8>>, date: Option<String>) -> Result<Option<Re
 
 fn schedule_error(e: ConfigError) -> Response {
     match e {
-        ConfigError::NotFound => error(404, "予約が見つかりません"),
-        ConfigError::Invalid(m) => error(400, &m),
-        ConfigError::Duplicate(m) => error(409, &m),
+        ConfigError::NotFound => coded(404, "schedule_not_found", "予約が見つかりません", &[]),
+        ConfigError::Invalid(m) => from_detail(400, &m),
+        ConfigError::Duplicate(m) => from_detail(409, &m),
         ConfigError::Io(_) => error(500, &e.to_string()),
     }
 }
@@ -126,17 +126,17 @@ impl App {
     }
 
     pub(crate) fn add_schedule(&self, body: &[u8], peer: IpAddr) -> Response {
-        let Ok(b) = serde_json::from_slice::<AddBody>(body) else { return error(400, "リクエストの形式が正しくありません") };
+        let Ok(b) = serde_json::from_slice::<AddBody>(body) else { return bad_body() };
         let time = match parse_time(&b.time) {
             Ok(t) => t,
             Err(r) => return r,
         };
         let repeat = match parse_repeat(b.days, b.date) {
             Ok(Some(r)) => r,
-            Ok(None) => return error(400, "曜日(days)か日付(date)を指定してください"),
+            Ok(None) => return coded(400, "days_or_date", "曜日(days)か日付(date)を指定してください", &[]),
             Err(r) => return r,
         };
-        let Some(device) = lock(&self.store).get(b.device_id).cloned() else { return error(404, "機器が見つかりません") };
+        let Some(device) = lock(&self.store).get(b.device_id).cloned() else { return coded(404, "device_not_found", "機器が見つかりません", &[]) };
         let new = NewSchedule { device_id: device.id, time, repeat, enabled: b.enabled.unwrap_or(true) };
         let now = now();
         match lock(&self.schedules).add(new, now) {
@@ -149,7 +149,7 @@ impl App {
     }
 
     pub(crate) fn patch_schedule(&self, id: u32, body: &[u8], peer: IpAddr) -> Response {
-        let Ok(b) = serde_json::from_slice::<PatchBody>(body) else { return error(400, "リクエストの形式が正しくありません") };
+        let Ok(b) = serde_json::from_slice::<PatchBody>(body) else { return bad_body() };
         let time = match b.time.as_deref().map(parse_time).transpose() {
             Ok(t) => t,
             Err(r) => return r,
