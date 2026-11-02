@@ -9,6 +9,8 @@ mod discovery;
 mod log;
 mod nic;
 mod power;
+mod schedule;
+mod schedule_api;
 mod server;
 mod tailscale;
 mod tracker;
@@ -122,9 +124,11 @@ fn prepare(opts: &Options) -> Result<Arc<server::Handler>, String> {
         Role::Relay => {
             let store = config::Store::load(&opts.config).map_err(|e| e.to_string())?;
             log::line(&format!("設定ファイル: {}", opts.config.display()));
-            let app = Arc::new(api::App::new(store));
+            let schedules = schedule::ScheduleStore::load(&schedule::path_beside(&opts.config)).map_err(|e| e.to_string())?;
+            let app = Arc::new(api::App::new(store, schedules));
             let monitor = Arc::clone(&app);
             thread::spawn(move || loop {
+                monitor.run_schedules();
                 monitor.monitor_once();
                 thread::sleep(MONITOR_INTERVAL);
             });
@@ -234,6 +238,8 @@ mod policy_tests {
             ("log.rs", include_str!("log.rs")),
             ("nic.rs", include_str!("nic.rs")),
             ("power.rs", include_str!("power.rs")),
+            ("schedule.rs", include_str!("schedule.rs")),
+            ("schedule_api.rs", include_str!("schedule_api.rs")),
             ("server.rs", include_str!("server.rs")),
             ("tailscale.rs", include_str!("tailscale.rs")),
             ("tracker.rs", include_str!("tracker.rs")),
