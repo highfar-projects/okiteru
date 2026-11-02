@@ -9,6 +9,7 @@ mod discovery;
 mod log;
 mod nic;
 mod power;
+mod retry;
 mod schedule;
 mod schedule_api;
 mod server;
@@ -238,6 +239,7 @@ mod policy_tests {
             ("log.rs", include_str!("log.rs")),
             ("nic.rs", include_str!("nic.rs")),
             ("power.rs", include_str!("power.rs")),
+            ("retry.rs", include_str!("retry.rs")),
             ("schedule.rs", include_str!("schedule.rs")),
             ("schedule_api.rs", include_str!("schedule_api.rs")),
             ("server.rs", include_str!("server.rs")),

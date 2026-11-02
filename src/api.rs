@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::config::{ConfigError, Device, NewDevice, Patch, Store};
+use crate::retry::{Retries, Step};
 use crate::schedule::ScheduleStore;
 use crate::power::Power;
 use crate::wol::Mac;
@@ -158,6 +159,15 @@ struct DeviceView<'a> {
     #[serde(flatten)]
     device: &'a Device,
     up: bool,
+    /// 起動要求を送っている間の様子。送った回数と、諦めたか
+    #[serde(skip_serializing_if = "Option::is_none")]
+    wake: Option<WakeView>,
+}
+
+#[derive(Serialize)]
+struct WakeView {
+    sent: u32,
+    gave_up: bool,
 }
 
 #[derive(Serialize)]
@@ -181,6 +191,7 @@ pub struct App {
     pub(crate) schedules: Mutex<ScheduleStore>,
     last_wake: Mutex<HashMap<u32, Instant>>,
     tracker: Mutex<Tracker>,
+    retries: Mutex<Retries>,
 }
 
 impl App {
@@ -190,6 +201,7 @@ impl App {
             schedules: Mutex::new(schedules),
             last_wake: Mutex::new(HashMap::new()),
             tracker: Mutex::new(Tracker::default()),
+            retries: Mutex::new(Retries::default()),
         }
     }
 
@@ -224,7 +236,16 @@ impl App {
         let devices = lock(&self.store).devices().to_vec();
         let up = probe_all(&devices);
         self.observe(&devices, &up);
-        let views: Vec<_> = devices.iter().zip(up).map(|(device, up)| DeviceView { device, up }).collect();
+        let retries = lock(&self.retries);
+        let views: Vec<_> = devices
+            .iter()
+            .zip(up)
+            .map(|(device, up)| DeviceView {
+                device,
+                up,
+                wake: retries.view(device.id).map(|(sent, gave_up)| WakeView { sent, gave_up }),
+            })
+            .collect();
         json_response(200, &views)
     }
 
@@ -244,6 +265,27 @@ impl App {
         let devices = lock(&self.store).devices().to_vec();
         let up = probe_all(&devices);
         self.observe(&devices, &up);
+        self.resend_wakes(&devices, &up);
+    }
+
+    /// 起動要求のあと起きていない機器へ、マジックパケットを送り直す(上限まで)。
+    fn resend_wakes(&self, devices: &[Device], up: &[bool]) {
+        for (device, &up) in devices.iter().zip(up) {
+            let step = lock(&self.retries).poll(device.id, up, Instant::now());
+            match step {
+                Step::Wait => {}
+                Step::Resend { attempt } => match send_wake(device) {
+                    Ok(nic_name) => log::line(&format!(
+                        "起動要求を再送しました: 「{}」({}回目、NIC {nic_name})まだ起動を確認できません",
+                        device.name, attempt
+                    )),
+                    Err((_, message)) => log::line(&format!("起動要求の再送に失敗: 「{}」({}回目): {message}", device.name, attempt)),
+                },
+                Step::GiveUp { sent } => {
+                    log::line(&format!("「{}」は起きませんでした(起動要求を {sent} 回送りました)", device.name))
+                }
+            }
+        }
     }
 
     fn add(&self, body: &[u8], peer: IpAddr) -> Response {
@@ -291,6 +333,7 @@ impl App {
             Ok(()) => {
                 lock(&self.last_wake).remove(&id);
                 lock(&self.tracker).forget(id);
+                lock(&self.retries).stop(id);
                 if let Err(e) = lock(&self.schedules).remove_for_device(id) {
                     log::line(&format!("機器の予約を消せませんでした: {e}"));
                 }
@@ -321,6 +364,7 @@ impl App {
         match send_wake(device) {
             Ok(nic_name) => {
                 lock(&self.tracker).woke(device.id, Instant::now());
+                lock(&self.retries).start(device.id, Instant::now());
                 log::line(&format!("起動要求: 「{}」({})へ送信しました(NIC {nic_name}、要求元 {origin})", device.name, device.mac));
                 Ok(nic_name)
             }
@@ -341,6 +385,7 @@ impl App {
         match agent::request(SocketAddr::new(ip.into(), agent::PORT), device.power) {
             Ok(()) => {
                 lock(&self.tracker).slept(id, Instant::now());
+                lock(&self.retries).stop(id);
                 log::line(&format!("お休み要求: 「{}」({ip})に{action}を頼みました(要求元 {peer})", device.name));
                 json_response(200, &json!({ "sent": true, "action": device.power }))
             }

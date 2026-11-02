@@ -94,6 +94,14 @@ function render() {
       waitingUntil.delete(d.id);
       notes.set(d.id, { text: "3 分たっても起きませんでした", error: true });
     }
+    // 中継が起動要求を送り直したあと、上限まで送っても起きなかったとき
+    if (!d.up && d.wake?.gave_up && waitingUntil.has(d.id)) {
+      waitingUntil.delete(d.id);
+      notes.set(d.id, {
+        text: `起動要求を ${d.wake.sent} 回送りましたが、起きませんでした。画面下の「起動しないときは」を確認してください`,
+        error: true,
+      });
+    }
     const waiting = !d.up && waitingUntil.has(d.id);
 
     const sleepDeadline = sleepingUntil.get(d.id) ?? 0;
@@ -112,7 +120,7 @@ function render() {
     card.next.hidden = !upcoming;
     card.state.classList.toggle("up", d.up);
     card.state.classList.toggle("waiting", waiting || sleeping);
-    card.label.textContent = sleeping ? "お休みなさい…(お休み待ち)" : d.up ? "起きています" : waiting ? "起きてください…(起きるのを待っています)" : "お休み中です";
+    card.label.textContent = sleeping ? "お休みなさい…(お休み待ち)" : d.up ? "起きています" : waiting ? `起きてください…(起きるのを待っています${d.wake?.sent > 1 ? `。${d.wake.sent} 回目を送りました` : ""})` : "お休み中です";
     card.wake.disabled = d.up || waiting;
     card.sleep.hidden = !d.tailnet_ip; // 相手の agent に届く IP が分かっている機器だけ
     card.sleep.disabled = !d.up || sleeping;
