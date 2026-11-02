@@ -12,6 +12,6 @@ okiteru は、Tailscale の tailnet の中で使うことを前提にしてい�
 tailnet に参加している端末(と localhost)からの操作を受け付けます。インターネットに公開しないでください
 (`tailscale funnel` やポート転送は使わないでください)。
 操作できる端末を絞りたいときは、Tailscale の ACL を使ってください(中継は 8765、agent は 8766)。
-中継の画面の操作は、任意で PIN の認証を足せます([README](README.md#認証pin))。agent(8766)は PIN の対象外なので、絞るには ACL を使ってください。
+中継の画面の操作は、任意で PIN の認証を足せます([README](README.md#認証pin))。agent(8766)は PIN の対象外です。守るには、agent の認証(トークン。[README](README.md#agent-の認証任意))を有効にするか、ACL を使ってください。
 
 守っていることは [README](README.md#安全面で守っていること) にあります。

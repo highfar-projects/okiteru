@@ -7,6 +7,7 @@
 //! - 変更系は `Content-Type: application/json` 必須(CORS のプリフライトが必要になり、他サイトから送れない)
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
@@ -15,6 +16,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::agent_auth;
 use crate::config::{ConfigError, Detail, Device, NewDevice, Patch, Store};
 use crate::auth::AuthState;
 use crate::push::PushStore;
@@ -37,6 +39,7 @@ pub struct Request {
     pub content_type: Option<String>,
     /// `Cookie` ヘッダー
     pub cookie: Option<String>,
+    pub authorization: Option<String>,
     pub peer: IpAddr,
     pub body: Vec<u8>,
 }
@@ -226,6 +229,8 @@ pub struct App {
     pub(crate) schedules: Mutex<ScheduleStore>,
     pub(crate) push: Arc<Mutex<PushStore>>,
     pub(crate) auth: Mutex<AuthState>,
+    /// 中継が agent に付けるトークンの置き場(設定していなければ付けない)
+    agent_token_path: Option<PathBuf>,
     last_wake: Mutex<HashMap<u32, Instant>>,
     tracker: Mutex<Tracker>,
     retries: Mutex<Retries>,
@@ -238,10 +243,16 @@ impl App {
             schedules: Mutex::new(schedules),
             push: Arc::new(Mutex::new(push)),
             auth: Mutex::new(auth),
+            agent_token_path: None,
             last_wake: Mutex::new(HashMap::new()),
             tracker: Mutex::new(Tracker::default()),
             retries: Mutex::new(Retries::default()),
         }
+    }
+
+    pub fn with_agent_token_path(mut self, path: PathBuf) -> App {
+        self.agent_token_path = Some(path);
+        self
     }
 
     pub fn handle(&self, req: &Request) -> Response {
@@ -436,7 +447,14 @@ impl App {
             return coded(409, "tailnet_ip_unset", "この機器の Tailscale の IP アドレスが未設定です。設定で入力してください", &[]);
         };
         let action = device.power.label();
-        match agent::request(SocketAddr::new(ip.into(), agent::PORT), device.power) {
+        let token = match self.agent_token_path.as_deref().map(agent_auth::load_token).transpose() {
+            Ok(token) => token.flatten(),
+            Err(message) => {
+                log::line(&format!("お休み要求を送れません: agent へのトークンを読めません: {message}"));
+                return coded(500, "agent_token_unreadable", &format!("agent へのトークンを読めません: {message}"), &[("detail", message)]);
+            }
+        };
+        match agent::request(SocketAddr::new(ip.into(), agent::PORT), device.power, token.as_deref()) {
             Ok(()) => {
                 lock(&self.tracker).slept(id, Instant::now());
                 lock(&self.retries).stop(id);
@@ -551,6 +569,7 @@ mod tests {
             origin: None,
             content_type: (method != "GET").then(|| "application/json".to_string()),
             cookie: None,
+            authorization: None,
             peer: "127.0.0.1".parse().unwrap(),
             body: body.as_bytes().to_vec(),
         }

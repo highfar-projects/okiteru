@@ -2,6 +2,7 @@
 #![deny(unsafe_code)]
 
 mod agent;
+mod agent_auth;
 mod api;
 mod auth;
 mod auth_api;
@@ -53,6 +54,12 @@ const USAGE: &str = "使い方:
   okiteru auth off                            認証を無効にする
   okiteru auth revoke                         ログイン中の端末をすべて外す(PIN はそのまま)
   okiteru auth status                         認証が有効かどうかを表示する
+
+agent(8766)にも認証をかけられる(任意)。中継と agent で同じトークンを持ち、agent はそれを持つ要求だけを受け付ける:
+  okiteru auth agent-new                      [agent の PC] トークンを作って表示し、認証を有効にする(表示は 1 回だけ)
+  okiteru auth agent-set                      [中継の PC] そのトークンを標準入力から読んで保存する
+  okiteru auth agent-off / agent-clear        agent 側を無効にする / 中継側のトークンを消す
+  okiteru auth agent-status                   設定の有無を表示する
                                               Windows はサービス、Linux は systemd、macOS は launchd に登録する
 
 起動される側の PC には --agent を付けて、休止・スリープ・シャットダウンの受け口を入れる:
@@ -151,7 +158,7 @@ fn prepare(opts: &Options) -> Result<Arc<server::Handler>, String> {
             let schedules = schedule::ScheduleStore::load(&schedule::path_beside(&opts.config)).map_err(|e| e.to_string())?;
             let push = push::PushStore::load(&push::path_beside(&opts.config)).map_err(|e| e.to_string())?;
             let auth = auth::AuthState::new(auth::path_beside(&opts.config));
-            let app = Arc::new(api::App::new(store, schedules, push, auth));
+            let app = Arc::new(api::App::new(store, schedules, push, auth).with_agent_token_path(agent_auth::token_path(&opts.config)));
             let monitor = Arc::clone(&app);
             thread::spawn(move || loop {
                 monitor.run_schedules();
@@ -162,7 +169,11 @@ fn prepare(opts: &Options) -> Result<Arc<server::Handler>, String> {
         }
         Role::Agent => {
             log::line("agent として動作します(休止・スリープ・シャットダウンの要求を受け付けます)");
-            Ok(Arc::new(|req: &api::Request| agent::handle(req, &power::Power::execute)))
+            let gate = agent_auth::gate_path(&opts.config);
+            if agent_auth::verdict(&gate, None) != agent_auth::Verdict::Open {
+                log::line("agent の認証が有効です(中継のトークンを持つ要求だけを受け付けます)");
+            }
+            Ok(Arc::new(move |req: &api::Request| agent::handle(req, &power::Power::execute, &gate)))
         }
     }
 }
@@ -247,6 +258,17 @@ fn read_pin() -> Result<String, String> {
     Ok(pin)
 }
 
+/// 標準入力から agent のトークンを 1 行読む。
+fn read_token() -> Result<String, String> {
+    use std::io::{BufRead, IsTerminal};
+    if std::io::stdin().is_terminal() {
+        eprint!("agent のトークン: ");
+    }
+    let mut line = String::new();
+    std::io::stdin().lock().read_line(&mut line).map_err(|e| format!("トークンを読めません: {e}"))?;
+    Ok(line.trim().to_string())
+}
+
 fn main() -> ExitCode {
     match env::args().nth(1).as_deref() {
         Some("-h" | "--help" | "help") => {
@@ -267,7 +289,12 @@ fn main() -> ExitCode {
         }
     };
     if opts.command == Command::Auth {
-        return match auth::run_command(&opts.auth_action, &opts.config, read_pin) {
+        let result = if opts.auth_action.starts_with("agent-") {
+            agent_auth::run_command(&opts.auth_action, &opts.config, read_token)
+        } else {
+            auth::run_command(&opts.auth_action, &opts.config, read_pin)
+        };
+        return match result {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("{e}");
@@ -292,6 +319,7 @@ mod policy_tests {
         let keyword = concat!("uns", "afe");
         let sources = [
             ("agent.rs", include_str!("agent.rs")),
+            ("agent_auth.rs", include_str!("agent_auth.rs")),
             ("api.rs", include_str!("api.rs")),
             ("auth.rs", include_str!("auth.rs")),
             ("auth_api.rs", include_str!("auth_api.rs")),

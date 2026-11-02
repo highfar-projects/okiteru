@@ -148,5 +148,7 @@
  "err.auth_unavailable": "認証の設定を読めないため、すべて断っています: {detail}",
  "err.login_required": "ログインが必要です",
  "err.login_locked": "失敗が続いたため、ログインを止めています。あと {secs} 秒ほど待ってください",
- "err.wrong_pin": "PIN が違います"
+ "err.wrong_pin": "PIN が違います",
+ "err.agent_unauthorized": "相手の agent が認証を求めています。中継のトークンが無いか、違います(`okiteru auth agent-set` を確認してください)",
+ "err.agent_token_unreadable": "agent へのトークンを読めません: {detail}"
 }

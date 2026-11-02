@@ -140,6 +140,7 @@ mod tests {
             origin: None,
             content_type: (method != "GET").then(|| "application/json".to_string()),
             cookie: None,
+            authorization: None,
             peer: "127.0.0.1".parse().unwrap(),
             body: body.as_bytes().to_vec(),
         });

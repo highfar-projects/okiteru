@@ -49,6 +49,7 @@ fn respond(handler: &Handler, mut request: tiny_http::Request) {
             origin: header(&request, "Origin"),
             content_type: header(&request, "Content-Type"),
             cookie: header(&request, "Cookie"),
+            authorization: header(&request, "Authorization"),
             peer,
             body,
         })
