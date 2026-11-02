@@ -38,6 +38,33 @@ function setNote(node, text, isError) {
   node.classList.toggle("error", Boolean(isError));
 }
 
+// ---- 確認 ----
+
+const confirmDialog = $("#confirm-dialog");
+
+// アプリ内の確認画面。「やめる」「Esc」「背景のタップ」はどれも false を返す(何も実行しない)。
+function askConfirm({ title, detail, warning, yes, strong = false }) {
+  if (confirmDialog.open) return Promise.resolve(false);
+  $("#confirm-title").textContent = title;
+  $("#confirm-detail").textContent = detail;
+  $("#confirm-warning").textContent = warning ?? "";
+  $("#confirm-warning").hidden = !warning;
+  const yesButton = $("#confirm-yes");
+  yesButton.textContent = yes;
+  yesButton.classList.toggle("strong", strong);
+  confirmDialog.returnValue = "";
+  return new Promise((resolve) => {
+    confirmDialog.addEventListener("close", () => resolve(confirmDialog.returnValue === "yes"), { once: true });
+    confirmDialog.showModal();
+  });
+}
+
+$("#confirm-yes").addEventListener("click", () => confirmDialog.close("yes"));
+$("#confirm-no").addEventListener("click", () => confirmDialog.close("no"));
+confirmDialog.addEventListener("click", (event) => {
+  if (event.target === confirmDialog) confirmDialog.close("no");
+});
+
 // ---- 機器の一覧 ----
 
 function createCard(id) {
@@ -168,7 +195,16 @@ async function wakeDevice(id) {
 
 async function sleepDevice(id) {
   const d = devices.find((x) => x.id === id);
-  if (!d || !confirm(`「${d.name}」を${POWER_LABELS[d.power]}にしますか?`)) return;
+  if (!d) return;
+  const shutdown = d.power === "shutdown";
+  const ok = await askConfirm({
+    title: `「${d.name}」をお休みさせますか?`,
+    detail: `する操作: ${POWER_LABELS[d.power]}`,
+    warning: shutdown ? "シャットダウンすると、設定によっては「起きてください」で起こせないことがあります。保存を求めるアプリが開いていると、止まらないこともあります。" : "",
+    yes: `${POWER_LABELS[d.power]}にする`,
+    strong: shutdown,
+  });
+  if (!ok) return;
   const card = cards.get(id);
   if (card) card.sleep.disabled = true;
   try {
@@ -231,8 +267,9 @@ function scheduleItem(s) {
   toggle.addEventListener("click", () => changeSchedule(() => api("PATCH", `/api/schedules/${s.id}`, { enabled: !s.enabled })));
   const remove = el("button", "danger", "削除");
   remove.type = "button";
-  remove.addEventListener("click", () => {
-    if (confirm(`${s.time} の予約を削除しますか?`)) changeSchedule(() => api("DELETE", `/api/schedules/${s.id}`));
+  remove.addEventListener("click", async () => {
+    const ok = await askConfirm({ title: "予約を削除しますか?", detail: `${s.time} ・ ${describeSchedule(s)}`, yes: "削除する" });
+    if (ok) changeSchedule(() => api("DELETE", `/api/schedules/${s.id}`));
   });
   const buttons = el("div", "buttons");
   buttons.append(toggle, remove);
@@ -487,7 +524,14 @@ $("#edit-form").addEventListener("submit", async (event) => {
 
 $("#delete").addEventListener("click", async () => {
   const d = devices.find((x) => x.id === editingId);
-  if (!d || !confirm(`「${d.name}」を削除しますか?`)) return;
+  if (!d) return;
+  const ok = await askConfirm({
+    title: "機器を削除しますか?",
+    detail: `「${d.name}」`,
+    warning: "この機器の起動予約も、まとめて消えます。",
+    yes: "削除する",
+  });
+  if (!ok) return;
   try {
     await api("DELETE", `/api/devices/${editingId}`);
     editDialog.close();

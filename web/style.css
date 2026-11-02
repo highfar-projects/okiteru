@@ -84,3 +84,8 @@ fieldset.days legend { padding: 0; margin-bottom: 4px; font-size: .9rem; color: 
 fieldset.days label { display: flex; align-items: center; gap: 4px; margin: 0; padding: 0 10px; min-height: 44px; border: 1px solid var(--line); border-radius: 10px; }
 fieldset.days input { width: auto; min-height: 0; margin: 0; }
 .header-buttons { display: flex; gap: 8px; }
+#confirm-dialog .confirm-detail { margin: 0 0 12px; font-size: 1.15rem; font-weight: 600; overflow-wrap: anywhere; }
+#confirm-dialog .confirm-warning { margin: 0 0 12px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--danger); color: var(--danger); font-size: .9rem; }
+#confirm-dialog .actions button { flex: 1; }
+#confirm-dialog #confirm-yes.danger { border-color: var(--danger); }
+#confirm-dialog #confirm-yes.strong { background: var(--danger); border-color: var(--danger); color: #fff; }

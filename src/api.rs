@@ -628,6 +628,18 @@ mod tests {
         assert_eq!(app.handle(&req("GET", "/apple-touch-icon.png", "")).status, 200);
     }
 
+    /// 確認はアプリ内の画面で行う。ブラウザ標準の確認ダイアログ(PWA では見た目が貧弱で、機器名が目立たない)に戻さない。
+    #[test]
+    fn web_ui_uses_its_own_confirmation() {
+        let js = include_str!("../web/app.js");
+        assert!(!js.contains("confirm("), "標準の confirm() が残っています");
+        assert!(js.matches("askConfirm(").count() >= 4, "お休み・機器の削除・予約の削除で askConfirm を使う");
+        let html = include_str!("../web/index.html");
+        for id in ["confirm-dialog", "confirm-title", "confirm-detail", "confirm-warning", "confirm-yes", "confirm-no"] {
+            assert!(html.contains(&format!(r#"id="{id}""#)), "{id}");
+        }
+    }
+
     /// 画面は CSP(インラインのスクリプト・スタイルを禁止)の下で動かすので、それを破る書き方をしていないか見る。
     #[test]
     fn web_ui_is_csp_clean() {

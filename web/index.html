@@ -121,6 +121,16 @@
   <div class="actions"><button id="close-schedule" type="button">閉じる</button></div>
 </dialog>
 
+<dialog id="confirm-dialog">
+  <h2 id="confirm-title"></h2>
+  <p id="confirm-detail" class="confirm-detail"></p>
+  <p id="confirm-warning" class="confirm-warning" role="alert" hidden></p>
+  <div class="actions">
+    <button id="confirm-no" type="button" autofocus>やめる</button>
+    <button id="confirm-yes" type="button" class="danger"></button>
+  </div>
+</dialog>
+
 <datalist id="ports">
   <option value="3389" label="リモート デスクトップ"></option>
   <option value="445" label="ファイル共有"></option>
