@@ -19,6 +19,8 @@ mod tailscale;
 mod tracker;
 mod webpush;
 mod wol;
+#[cfg(unix)]
+mod unixsvc;
 #[cfg(windows)]
 mod winsvc;
 #[cfg(windows)]
@@ -41,8 +43,9 @@ const MONITOR_INTERVAL: Duration = Duration::from_secs(10);
 
 const USAGE: &str = "使い方:
   okiteru [--port 番号] [--config ファイル]   前面で実行する
-  okiteru install [--port 番号] [--system]    Windows サービスとして登録して開始する(管理者権限)
-  okiteru uninstall                           Windows サービスを停止して削除する(管理者権限)
+  okiteru install [--port 番号] [--system]    常駐サービスとして登録して開始する(管理者権限。--system は Windows のみ)
+  okiteru uninstall                           そのサービスを停止して削除する(管理者権限)
+                                              Windows はサービス、Linux は systemd、macOS は launchd に登録する
 
 起動される側の PC には --agent を付けて、休止・スリープ・シャットダウンの受け口を入れる:
   okiteru --agent                             前面で実行する
@@ -183,7 +186,7 @@ fn run(opts: &Options, stop: Option<&Receiver<()>>) -> Result<(), String> {
 }
 
 #[cfg(windows)]
-fn windows_command(opts: &Options) -> Result<(), String> {
+fn platform_command(opts: &Options) -> Result<(), String> {
     match opts.command {
         Command::Install => winsvc::install(opts.role, opts.port, opts.system),
         Command::Uninstall => winsvc::uninstall(opts.role),
@@ -192,11 +195,13 @@ fn windows_command(opts: &Options) -> Result<(), String> {
     }
 }
 
-#[cfg(not(windows))]
-fn windows_command(opts: &Options) -> Result<(), String> {
+#[cfg(unix)]
+fn platform_command(opts: &Options) -> Result<(), String> {
     match opts.command {
         Command::Run => run(opts, None),
-        _ => Err("このコマンドは Windows 専用です".into()),
+        Command::Install => unixsvc::install(opts.role, opts.port),
+        Command::Uninstall => unixsvc::uninstall(opts.role),
+        Command::Service => Err("このコマンドは Windows 専用です".into()),
     }
 }
 
@@ -219,7 +224,7 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    match windows_command(&opts) {
+    match platform_command(&opts) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("{e}");
@@ -251,6 +256,7 @@ mod policy_tests {
             ("server.rs", include_str!("server.rs")),
             ("tailscale.rs", include_str!("tailscale.rs")),
             ("tracker.rs", include_str!("tracker.rs")),
+            ("unixsvc.rs", include_str!("unixsvc.rs")),
             ("webpush.rs", include_str!("webpush.rs")),
             ("winsvc.rs", include_str!("winsvc.rs")),
             ("wol.rs", include_str!("wol.rs")),

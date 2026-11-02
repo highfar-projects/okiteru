@@ -81,8 +81,13 @@ pub fn parse_status(json: &str) -> Result<Vec<Peer>, serde_json::Error> {
 
 /// `tailscale` の実行ファイル。固定のパスか PATH 上の名前だけを使い、シェルは経由しない。
 fn binary() -> &'static str {
-    if cfg!(windows) && std::path::Path::new(r"C:\Program Files\Tailscale\tailscale.exe").exists() {
-        r"C:\Program Files\Tailscale\tailscale.exe"
+    const WINDOWS: &str = r"C:\Program Files\Tailscale\tailscale.exe";
+    // App Store 版・直接配布版の macOS アプリは、コマンドを PATH に置かない
+    const MACOS: &str = "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
+    if cfg!(windows) && std::path::Path::new(WINDOWS).exists() {
+        WINDOWS
+    } else if cfg!(target_os = "macos") && std::path::Path::new(MACOS).exists() {
+        MACOS
     } else {
         "tailscale"
     }

@@ -49,12 +49,30 @@ pub fn parse_proc_net_arp(text: &str) -> Vec<Entry> {
         .collect()
 }
 
+/// macOS の `arp -an` を読む。1 行は `? (192.168.0.5) at 0:11:22:aa:bb:c on en0 ifscope [ethernet]`。
+/// macOS は MAC の各桁の先頭の 0 を省く(`0:11:22:aa:bb:c`)ので、桁をそろえてから読む。
+/// 解決できていない相手は `(incomplete)` と出るので読み飛ばす。
+pub fn parse_macos(text: &str) -> Vec<Entry> {
+    text.lines()
+        .filter_map(|line| {
+            let ip = line.split_once('(')?.1.split_once(')')?.0.parse().ok()?;
+            let mac = line.split_once(" at ")?.1.split_whitespace().next()?;
+            let octets: Vec<String> = mac.split(':').map(|o| format!("{o:0>2}")).collect();
+            let mac = Mac::parse(&octets.join(":")).ok().filter(Mac::is_unicast)?;
+            Some(Entry { iface: None, ip, mac })
+        })
+        .collect()
+}
+
 fn read_table() -> std::io::Result<Vec<Entry>> {
     if cfg!(windows) {
         let out = std::process::Command::new("arp").arg("-a").output()?;
         Ok(parse_windows(&String::from_utf8_lossy(&out.stdout)))
     } else if cfg!(target_os = "linux") {
         Ok(parse_proc_net_arp(&std::fs::read_to_string("/proc/net/arp")?))
+    } else if cfg!(target_os = "macos") {
+        let out = std::process::Command::new("/usr/sbin/arp").arg("-an").output()?;
+        Ok(parse_macos(&String::from_utf8_lossy(&out.stdout)))
     } else {
         Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "ARP テーブルの取得は未対応の OS です"))
     }
@@ -92,6 +110,22 @@ mod tests {
   192.168.0.255         ff-ff-ff-ff-ff-ff     静的
   224.0.0.22            01-00-5e-00-00-16     静的
 ";
+
+    #[test]
+    fn macos_output_with_unpadded_octets_and_incomplete_entries() {
+        let text = "\
+? (192.168.0.1) at 0:11:22:aa:bb:c on en0 ifscope [ethernet]
+? (192.168.0.9) at (incomplete) on en0 ifscope [ethernet]
+? (192.168.0.10) at 4c:20:b8:0:1:ff on en0 ifscope [ethernet]
+? (224.0.0.251) at 1:0:5e:0:0:fb on en0 ifscope permanent [ethernet]
+? (192.168.0.255) at ff:ff:ff:ff:ff:ff on en0 ifscope [ethernet]
+not an entry
+";
+        let e = parse_macos(text);
+        assert_eq!(e.len(), 2, "{e:?}");
+        assert_eq!((e[0].ip, e[0].mac.to_string()), ("192.168.0.1".parse().unwrap(), "00:11:22:aa:bb:0c".to_string()));
+        assert_eq!((e[1].ip, e[1].mac.to_string()), ("192.168.0.10".parse().unwrap(), "4c:20:b8:00:01:ff".to_string()));
+    }
 
     #[test]
     fn windows_japanese_output() {
