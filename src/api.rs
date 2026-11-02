@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::config::{ConfigError, Device, NewDevice, Patch, Store};
+use crate::push::PushStore;
 use crate::retry::{Retries, Step};
 use crate::schedule::ScheduleStore;
 use crate::power::Power;
@@ -58,6 +59,7 @@ fn asset(path: &str) -> Option<(&'static str, &'static [u8])> {
     Some(match path {
         "/" | "/index.html" => ("text/html; charset=utf-8", include_bytes!("../web/index.html")),
         "/app.js" => ("text/javascript; charset=utf-8", include_bytes!("../web/app.js")),
+        "/sw.js" => ("text/javascript; charset=utf-8", include_bytes!("../web/sw.js")),
         "/style.css" => ("text/css; charset=utf-8", include_bytes!("../web/style.css")),
         "/manifest.webmanifest" => ("application/manifest+json", include_bytes!("../web/manifest.webmanifest")),
         "/icon.svg" => ("image/svg+xml", include_bytes!("../web/icon.svg")),
@@ -189,16 +191,18 @@ fn config_error(e: ConfigError) -> Response {
 pub struct App {
     pub(crate) store: Mutex<Store>,
     pub(crate) schedules: Mutex<ScheduleStore>,
+    pub(crate) push: Arc<Mutex<PushStore>>,
     last_wake: Mutex<HashMap<u32, Instant>>,
     tracker: Mutex<Tracker>,
     retries: Mutex<Retries>,
 }
 
 impl App {
-    pub fn new(store: Store, schedules: ScheduleStore) -> App {
+    pub fn new(store: Store, schedules: ScheduleStore, push: PushStore) -> App {
         App {
             store: Mutex::new(store),
             schedules: Mutex::new(schedules),
+            push: Arc::new(Mutex::new(push)),
             last_wake: Mutex::new(HashMap::new()),
             tracker: Mutex::new(Tracker::default()),
             retries: Mutex::new(Retries::default()),
@@ -224,6 +228,9 @@ impl App {
             ("POST", ["api", "devices", i, "wake"]) => id(i).map_or_else(not_found, |i| self.wake(i, req.peer)),
             ("POST", ["api", "devices", i, "sleep"]) => id(i).map_or_else(not_found, |i| self.sleep(i, req.peer)),
             ("GET", ["api", "candidates"]) => self.candidates(req.peer),
+            ("GET", ["api", "push", "key"]) => self.push_key(),
+            ("POST", ["api", "push", "subscribe"]) => self.subscribe(&req.body, req.peer),
+            ("POST", ["api", "push", "unsubscribe"]) => self.unsubscribe(&req.body, req.peer),
             ("GET", ["api", "schedules"]) => self.list_schedules(),
             ("POST", ["api", "schedules"]) => self.add_schedule(&req.body, req.peer),
             ("PATCH", ["api", "schedules", i]) => id(i).map_or_else(not_found, |i| self.patch_schedule(i, &req.body, req.peer)),
@@ -256,6 +263,11 @@ impl App {
         for (device, &up) in devices.iter().zip(up) {
             if let Some(event) = tracker.observe(device.id, up, now) {
                 log::line(&describe(&device.name, &event));
+                match event {
+                    Event::Started { after: Some(_) } => self.notify("起きました", &format!("「{}」が起きました", device.name)),
+                    Event::Stopped { after: Some(_) } => self.notify("お休みしました", &format!("「{}」がお休みしました", device.name)),
+                    _ => {}
+                }
             }
         }
     }
@@ -282,7 +294,8 @@ impl App {
                     Err((_, message)) => log::line(&format!("起動要求の再送に失敗: 「{}」({}回目): {message}", device.name, attempt)),
                 },
                 Step::GiveUp { sent } => {
-                    log::line(&format!("「{}」は起きませんでした(起動要求を {sent} 回送りました)", device.name))
+                    log::line(&format!("「{}」は起きませんでした(起動要求を {sent} 回送りました)", device.name));
+                    self.notify("起きませんでした", &format!("「{}」は起動要求を {sent} 回送っても起きませんでした", device.name));
                 }
             }
         }
@@ -473,7 +486,7 @@ mod tests {
     fn app(tag: &str) -> App {
         let dir = std::env::temp_dir().join(format!("okiteru-api-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        App::new(Store::load(&dir.join("devices.json")).unwrap(), ScheduleStore::load(&dir.join("schedules.json")).unwrap())
+        App::new(Store::load(&dir.join("devices.json")).unwrap(), ScheduleStore::load(&dir.join("schedules.json")).unwrap(), PushStore::load(&dir.join("push.json")).unwrap())
     }
 
     fn req(method: &str, target: &str, body: &str) -> Request {

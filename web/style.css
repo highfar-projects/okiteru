@@ -83,3 +83,4 @@ fieldset.days { border: 0; margin: 0 0 12px; padding: 0; display: flex; flex-wra
 fieldset.days legend { padding: 0; margin-bottom: 4px; font-size: .9rem; color: var(--muted); }
 fieldset.days label { display: flex; align-items: center; gap: 4px; margin: 0; padding: 0 10px; min-height: 44px; border: 1px solid var(--line); border-radius: 10px; }
 fieldset.days input { width: auto; min-height: 0; margin: 0; }
+.header-buttons { display: flex; gap: 8px; }

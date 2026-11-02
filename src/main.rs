@@ -9,12 +9,15 @@ mod discovery;
 mod log;
 mod nic;
 mod power;
+mod push;
+mod push_api;
 mod retry;
 mod schedule;
 mod schedule_api;
 mod server;
 mod tailscale;
 mod tracker;
+mod webpush;
 mod wol;
 #[cfg(windows)]
 mod winsvc;
@@ -126,7 +129,8 @@ fn prepare(opts: &Options) -> Result<Arc<server::Handler>, String> {
             let store = config::Store::load(&opts.config).map_err(|e| e.to_string())?;
             log::line(&format!("設定ファイル: {}", opts.config.display()));
             let schedules = schedule::ScheduleStore::load(&schedule::path_beside(&opts.config)).map_err(|e| e.to_string())?;
-            let app = Arc::new(api::App::new(store, schedules));
+            let push = push::PushStore::load(&push::path_beside(&opts.config)).map_err(|e| e.to_string())?;
+            let app = Arc::new(api::App::new(store, schedules, push));
             let monitor = Arc::clone(&app);
             thread::spawn(move || loop {
                 monitor.run_schedules();
@@ -239,12 +243,15 @@ mod policy_tests {
             ("log.rs", include_str!("log.rs")),
             ("nic.rs", include_str!("nic.rs")),
             ("power.rs", include_str!("power.rs")),
+            ("push.rs", include_str!("push.rs")),
+            ("push_api.rs", include_str!("push_api.rs")),
             ("retry.rs", include_str!("retry.rs")),
             ("schedule.rs", include_str!("schedule.rs")),
             ("schedule_api.rs", include_str!("schedule_api.rs")),
             ("server.rs", include_str!("server.rs")),
             ("tailscale.rs", include_str!("tailscale.rs")),
             ("tracker.rs", include_str!("tracker.rs")),
+            ("webpush.rs", include_str!("webpush.rs")),
             ("winsvc.rs", include_str!("winsvc.rs")),
             ("wol.rs", include_str!("wol.rs")),
         ];

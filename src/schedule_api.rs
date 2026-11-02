@@ -208,12 +208,13 @@ mod tests {
     use super::*;
     use crate::api::Request;
     use crate::config::Store;
+    use crate::push::PushStore;
     use crate::schedule::ScheduleStore;
 
     fn app(tag: &str) -> App {
         let dir = std::env::temp_dir().join(format!("okiteru-schedule-api-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        App::new(Store::load(&dir.join("devices.json")).unwrap(), ScheduleStore::load(&dir.join("schedules.json")).unwrap())
+        App::new(Store::load(&dir.join("devices.json")).unwrap(), ScheduleStore::load(&dir.join("schedules.json")).unwrap(), PushStore::load(&dir.join("push.json")).unwrap())
     }
 
     fn call(app: &App, method: &str, target: &str, body: &str) -> (u16, serde_json::Value) {
