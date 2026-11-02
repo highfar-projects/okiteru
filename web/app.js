@@ -22,6 +22,7 @@ async function api(method, path, body) {
   }
   const res = await fetch(path, options);
   const data = await res.json().catch(() => ({}));
+  if (res.status === 401 && !path.startsWith("/api/auth/")) showLogin();
   if (!res.ok) throw new Error(data.error || `エラーが発生しました (${res.status})`);
   return data;
 }
@@ -36,6 +37,52 @@ function el(tag, className, text) {
 function setNote(node, text, isError) {
   node.textContent = text;
   node.classList.toggle("error", Boolean(isError));
+}
+
+// ---- ログイン(中継で PIN を設定したときだけ) ----
+
+const loginDialog = $("#login-dialog");
+
+function showLogin() {
+  if (loginDialog.open) return;
+  stop();
+  setNote($("#login-note"), "");
+  loginDialog.showModal();
+  $("#login-form").pin.focus();
+}
+
+// ログイン前は閉じられない(Esc も効かせない)
+loginDialog.addEventListener("cancel", (event) => event.preventDefault());
+
+$("#login-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.target;
+  try {
+    await api("POST", "/api/auth/login", { pin: form.pin.value });
+    form.reset();
+    loginDialog.close();
+    $("#logout").hidden = false;
+    start();
+    refreshNotifyButton();
+  } catch (e) {
+    setNote($("#login-note"), e.message, true);
+    form.pin.select();
+  }
+});
+
+$("#logout").addEventListener("click", async () => {
+  await api("POST", "/api/auth/logout").catch(() => {});
+  location.reload();
+});
+
+async function checkAuth() {
+  try {
+    const status = await api("GET", "/api/auth/status");
+    $("#logout").hidden = !status.required;
+    if (status.required && !status.authenticated) showLogin();
+  } catch {
+    // 中継に接続できないときは、一覧の取得の失敗として表示される
+  }
 }
 
 // ---- 確認 ----
@@ -229,7 +276,7 @@ function stop() {
   timer = null;
 }
 
-document.addEventListener("visibilitychange", () => (document.hidden ? stop() : start()));
+document.addEventListener("visibilitychange", () => (document.hidden ? stop() : !loginDialog.open && start()));
 
 // ---- 起動予約 ----
 
@@ -543,4 +590,5 @@ $("#delete").addEventListener("click", async () => {
 
 $("#close-edit").addEventListener("click", () => editDialog.close());
 
+checkAuth();
 start();

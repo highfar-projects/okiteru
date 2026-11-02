@@ -3,6 +3,8 @@
 
 mod agent;
 mod api;
+mod auth;
+mod auth_api;
 mod arp;
 mod config;
 mod discovery;
@@ -45,6 +47,12 @@ const USAGE: &str = "使い方:
   okiteru [--port 番号] [--config ファイル]   前面で実行する
   okiteru install [--port 番号] [--system]    常駐サービスとして登録して開始する(管理者権限。--system は Windows のみ)
   okiteru uninstall                           そのサービスを停止して削除する(管理者権限)
+
+画面の操作に PIN を求める(任意。既定では無効)。中継の PC で行い、サービスの再起動は要らない:
+  okiteru auth set [--config ファイル]        PIN を設定して認証を有効にする(PIN は標準入力から読む)
+  okiteru auth off                            認証を無効にする
+  okiteru auth revoke                         ログイン中の端末をすべて外す(PIN はそのまま)
+  okiteru auth status                         認証が有効かどうかを表示する
                                               Windows はサービス、Linux は systemd、macOS は launchd に登録する
 
 起動される側の PC には --agent を付けて、休止・スリープ・シャットダウンの受け口を入れる:
@@ -59,6 +67,8 @@ enum Command {
     Service,
     Install,
     Uninstall,
+    /// `okiteru auth …`
+    Auth,
 }
 
 /// 常時起動の PC で動かす中継か、起動される側の PC で動かす受け口か。
@@ -91,6 +101,8 @@ struct Options {
     config: PathBuf,
     /// サービスを LocalSystem で動かす(既定は LocalService)
     system: bool,
+    /// `auth` の操作(set / off / revoke / status)
+    auth_action: String,
 }
 
 fn parse_args() -> Result<Options, String> {
@@ -99,6 +111,7 @@ fn parse_args() -> Result<Options, String> {
         Some("install") => Command::Install,
         Some("uninstall") => Command::Uninstall,
         Some("service") => Command::Service,
+        Some("auth") => Command::Auth,
         Some("run") | None => Command::Run,
         Some(flag) if flag.starts_with('-') => Command::Run,
         Some(other) => return Err(format!("不明なコマンド: {other}")),
@@ -106,7 +119,11 @@ fn parse_args() -> Result<Options, String> {
     if args.peek().is_some_and(|a| !a.starts_with('-')) {
         args.next();
     }
-    let mut opts = Options { command, role: Role::Relay, port: 0, config: config::default_path(), system: false };
+    let mut opts =
+        Options { command, role: Role::Relay, port: 0, config: config::default_path(), system: false, auth_action: String::new() };
+    if opts.command == Command::Auth {
+        opts.auth_action = args.next_if(|a| !a.starts_with('-')).ok_or("auth の操作がありません(set / off / revoke / status)")?;
+    }
     let mut port = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -133,7 +150,8 @@ fn prepare(opts: &Options) -> Result<Arc<server::Handler>, String> {
             log::line(&format!("設定ファイル: {}", opts.config.display()));
             let schedules = schedule::ScheduleStore::load(&schedule::path_beside(&opts.config)).map_err(|e| e.to_string())?;
             let push = push::PushStore::load(&push::path_beside(&opts.config)).map_err(|e| e.to_string())?;
-            let app = Arc::new(api::App::new(store, schedules, push));
+            let auth = auth::AuthState::new(auth::path_beside(&opts.config));
+            let app = Arc::new(api::App::new(store, schedules, push, auth));
             let monitor = Arc::clone(&app);
             thread::spawn(move || loop {
                 monitor.run_schedules();
@@ -190,6 +208,7 @@ fn platform_command(opts: &Options) -> Result<(), String> {
     match opts.command {
         Command::Install => winsvc::install(opts.role, opts.port, opts.system),
         Command::Uninstall => winsvc::uninstall(opts.role),
+        Command::Auth => Ok(()), // main で処理済み
         Command::Service => winsvc_entry::start(winsvc::service_name(opts.role)).map_err(|e| format!("サービスとして起動できません: {e}")),
         Command::Run => run(opts, None),
     }
@@ -201,8 +220,31 @@ fn platform_command(opts: &Options) -> Result<(), String> {
         Command::Run => run(opts, None),
         Command::Install => unixsvc::install(opts.role, opts.port),
         Command::Uninstall => unixsvc::uninstall(opts.role),
+        Command::Auth => Ok(()), // main で処理済み
         Command::Service => Err("このコマンドは Windows 専用です".into()),
     }
+}
+
+/// 標準入力から PIN を 1 行読む。端末につながっているときは、確認のためもう一度入力させる。
+/// (入力は画面に表示される。隠したいときは、`echo` ではなくファイルやパイプで渡す)
+fn read_pin() -> Result<String, String> {
+    use std::io::{BufRead, IsTerminal, Write};
+    let stdin = std::io::stdin();
+    let interactive = stdin.is_terminal();
+    let read = |prompt: &str| -> Result<String, String> {
+        if interactive {
+            eprint!("{prompt}");
+            let _ = std::io::stderr().flush();
+        }
+        let mut line = String::new();
+        stdin.lock().read_line(&mut line).map_err(|e| format!("PIN を読めません: {e}"))?;
+        Ok(line.trim_end_matches(['\r', '\n']).to_string())
+    };
+    let pin = read(&format!("新しい PIN({}文字以上): ", auth::MIN_PIN_CHARS))?;
+    if interactive && read("もう一度: ")? != pin {
+        return Err("PIN が一致しません".into());
+    }
+    Ok(pin)
 }
 
 fn main() -> ExitCode {
@@ -224,6 +266,15 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if opts.command == Command::Auth {
+        return match auth::run_command(&opts.auth_action, &opts.config, read_pin) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("{e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     match platform_command(&opts) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -242,6 +293,8 @@ mod policy_tests {
         let sources = [
             ("agent.rs", include_str!("agent.rs")),
             ("api.rs", include_str!("api.rs")),
+            ("auth.rs", include_str!("auth.rs")),
+            ("auth_api.rs", include_str!("auth_api.rs")),
             ("arp.rs", include_str!("arp.rs")),
             ("config.rs", include_str!("config.rs")),
             ("discovery.rs", include_str!("discovery.rs")),

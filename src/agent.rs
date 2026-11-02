@@ -90,6 +90,7 @@ mod tests {
             target: target.into(),
             host: Some("100.84.187.35:8766".into()),
             origin: None,
+            cookie: None,
             content_type: (method != "GET").then(|| "application/json".to_string()),
             peer: "100.120.177.56".parse().unwrap(),
             body: body.as_bytes().to_vec(),

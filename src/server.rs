@@ -48,6 +48,7 @@ fn respond(handler: &Handler, mut request: tiny_http::Request) {
             host: header(&request, "Host"),
             origin: header(&request, "Origin"),
             content_type: header(&request, "Content-Type"),
+            cookie: header(&request, "Cookie"),
             peer,
             body,
         })
@@ -63,6 +64,11 @@ fn respond(handler: &Handler, mut request: tiny_http::Request) {
         if let Ok(h) = tiny_http::Header::from_bytes(name, value) {
             out.add_header(h);
         }
+    }
+    if let Some(cookie) = &response.set_cookie
+        && let Ok(h) = tiny_http::Header::from_bytes("Set-Cookie", cookie.as_str())
+    {
+        out.add_header(h);
     }
     let _ = request.respond(out);
 }

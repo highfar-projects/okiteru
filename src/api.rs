@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::config::{ConfigError, Device, NewDevice, Patch, Store};
+use crate::auth::AuthState;
 use crate::push::PushStore;
 use crate::retry::{Retries, Step};
 use crate::schedule::ScheduleStore;
@@ -34,6 +35,8 @@ pub struct Request {
     pub host: Option<String>,
     pub origin: Option<String>,
     pub content_type: Option<String>,
+    /// `Cookie` ヘッダー
+    pub cookie: Option<String>,
     pub peer: IpAddr,
     pub body: Vec<u8>,
 }
@@ -42,6 +45,15 @@ pub struct Response {
     pub status: u16,
     pub content_type: &'static str,
     pub body: Vec<u8>,
+    /// `Set-Cookie` の値
+    pub set_cookie: Option<String>,
+}
+
+impl Response {
+    pub fn with_cookie(mut self, value: String) -> Response {
+        self.set_cookie = Some(value);
+        self
+    }
 }
 
 const JSON_TYPE: &str = "application/json; charset=utf-8";
@@ -51,6 +63,7 @@ pub fn json_response<T: Serialize>(status: u16, value: &T) -> Response {
         status,
         content_type: JSON_TYPE,
         body: serde_json::to_vec(value).unwrap_or_else(|_| b"null".to_vec()),
+        set_cookie: None,
     }
 }
 
@@ -192,17 +205,19 @@ pub struct App {
     pub(crate) store: Mutex<Store>,
     pub(crate) schedules: Mutex<ScheduleStore>,
     pub(crate) push: Arc<Mutex<PushStore>>,
+    pub(crate) auth: Mutex<AuthState>,
     last_wake: Mutex<HashMap<u32, Instant>>,
     tracker: Mutex<Tracker>,
     retries: Mutex<Retries>,
 }
 
 impl App {
-    pub fn new(store: Store, schedules: ScheduleStore, push: PushStore) -> App {
+    pub fn new(store: Store, schedules: ScheduleStore, push: PushStore, auth: AuthState) -> App {
         App {
             store: Mutex::new(store),
             schedules: Mutex::new(schedules),
             push: Arc::new(Mutex::new(push)),
+            auth: Mutex::new(auth),
             last_wake: Mutex::new(HashMap::new()),
             tracker: Mutex::new(Tracker::default()),
             retries: Mutex::new(Retries::default()),
@@ -216,8 +231,11 @@ impl App {
         let path = req.target.split('?').next().unwrap_or("");
         if req.method == "GET"
             && let Some((content_type, body)) = asset(path) {
-                return Response { status: 200, content_type, body: body.to_vec() };
+                return Response { status: 200, content_type, body: body.to_vec(), set_cookie: None };
             }
+        if let Some(rejection) = self.auth_gate(req, path) {
+            return rejection;
+        }
         let segments: Vec<&str> = path.trim_matches('/').split('/').collect();
         let id = |s: &str| s.parse::<u32>().ok();
         match (req.method.as_str(), segments.as_slice()) {
@@ -228,6 +246,9 @@ impl App {
             ("POST", ["api", "devices", i, "wake"]) => id(i).map_or_else(not_found, |i| self.wake(i, req.peer)),
             ("POST", ["api", "devices", i, "sleep"]) => id(i).map_or_else(not_found, |i| self.sleep(i, req.peer)),
             ("GET", ["api", "candidates"]) => self.candidates(req.peer),
+            ("GET", ["api", "auth", "status"]) => self.auth_status(req),
+            ("POST", ["api", "auth", "login"]) => self.login(&req.body, req.peer),
+            ("POST", ["api", "auth", "logout"]) => self.logout(req.peer),
             ("GET", ["api", "push", "key"]) => self.push_key(),
             ("POST", ["api", "push", "subscribe"]) => self.subscribe(&req.body, req.peer),
             ("POST", ["api", "push", "unsubscribe"]) => self.unsubscribe(&req.body, req.peer),
@@ -486,7 +507,7 @@ mod tests {
     fn app(tag: &str) -> App {
         let dir = std::env::temp_dir().join(format!("okiteru-api-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        App::new(Store::load(&dir.join("devices.json")).unwrap(), ScheduleStore::load(&dir.join("schedules.json")).unwrap(), PushStore::load(&dir.join("push.json")).unwrap())
+        App::new(Store::load(&dir.join("devices.json")).unwrap(), ScheduleStore::load(&dir.join("schedules.json")).unwrap(), PushStore::load(&dir.join("push.json")).unwrap(), AuthState::new(dir.join("auth.json")))
     }
 
     fn req(method: &str, target: &str, body: &str) -> Request {
@@ -496,6 +517,7 @@ mod tests {
             host: Some("localhost:8765".into()),
             origin: None,
             content_type: (method != "GET").then(|| "application/json".to_string()),
+            cookie: None,
             peer: "127.0.0.1".parse().unwrap(),
             body: body.as_bytes().to_vec(),
         }
