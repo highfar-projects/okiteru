@@ -2,7 +2,7 @@
 
 Tailscale につなぐだけで、LAN 内の PC をスマホから起こして(Wake-on-LAN)、お休みさせて(休止・スリープ・シャットダウン)、様子を見られる中継ツールです。
 
-*English: a single-binary Wake-on-LAN relay for your tailnet. Install it on one always-on PC (Windows; Linux and macOS are supported too, less tested) with Tailscale, and wake, monitor and put to sleep your other LAN machines from your phone. No configuration; the LAN broadcast address, NIC and MAC addresses are found automatically. UI and docs are in Japanese.*
+*English: a single-binary Wake-on-LAN relay for your tailnet. Install it on one always-on PC (Windows; Linux and macOS are supported too, less tested) with Tailscale, and wake, monitor and put to sleep your other LAN machines from your phone. No configuration; the LAN broadcast address, NIC and MAC addresses are found automatically. The web UI is available in Japanese and English (it follows the browser language; switch it from the selector in the header); logs, the command-line help and the docs are in Japanese.*
 
 - **設定不要:** 送信元の NIC とブロードキャストアドレスは自動で求めます。起動中の機器は、tailnet の端末一覧と ARP から見つけて、選ぶだけで登録できます(MAC の手入力は不要)。
 - **複数台:** 機器の追加・削除・名前の変更は画面から。機器ごとに、起動の確認に使う TCP ポートを選べます。
@@ -10,6 +10,7 @@ Tailscale につなぐだけで、LAN 内の PC をスマホから起こして(W
 - **起動予約:** 機器ごとに、決めた時刻に自動で起こします(毎週の曜日指定、または一度だけ)。
 - **再送:** 起動要求のあと、起きたことを確認できなければ、30 秒おきに最大 3 回まで自動で送り直します。それでも起きなければ失敗として画面に出します。
 - **通知:** 起きたとき、起きなかったとき、お休みしたときに、スマホへ通知します(Web Push。HTTPS が必要)。
+- **日本語・英語:** 画面は日本語と英語で表示できます。ブラウザの言語に合わせて選び、画面の右上でも切り替えられます。
 - **PIN での認証(任意):** tailnet の中でも、操作できる人を PIN で絞れます。既定では無効です。
 - **お休みなさい:** 相手の PC を休止状態・スリープ・シャットダウンにします(機器ごとに選択。相手側に agent が必要)。
 - **導入が簡単:** Rust 製の単一バイナリ(Python などは不要)。Windows ではサービスとして自動起動します。スマホにはアプリとしてインストールできます。
@@ -171,6 +172,27 @@ okiteru auth off      # 認証を無効にする
 - 通信そのものは暗号化しません。Cookie は、HTTP のままなら Tailscale の WireGuard の上を流れます。`tailscale serve` で HTTPS にしたときも、Cookie に `Secure` は付けていません。
 - PIN は、短い文字列です。長い失敗の止め方で守っていますが、強い守りが要るなら、Tailscale の ACL と併用してください。
 - `auth.json` は、Linux・macOS では自分だけが読める権限で作ります。Windows では、`C:\ProgramData\okiteru\` の権限に従います(ほかのローカルユーザーが読める場合があります)。
+
+## 言語
+
+画面は日本語(`ja`)と英語(`en`)に対応しています。最初の言語はブラウザの設定(`navigator.languages`)から選び、どちらでもなければ英語です。画面の右上の選択で切り替えると、その端末のブラウザに保存されます。
+
+サーバーが返すエラーは、文と一緒に種類(`code`)と補足(`params`)を返し、画面が選んだ言語の文を作ります。知らない `code` のときは、サーバーの文(日本語)をそのまま出します。
+
+次のものは、今のところ日本語のままです。
+
+- ログ(`okiteru.log`)と、コマンドラインの使い方の表示。調べものに使うので、日本語に固定しています
+- スマホに届く通知の文面(サーバーが作って送るため)
+- `manifest.webmanifest` の説明文
+
+### 言語を足す
+
+1. `web/lang/ja.json` をコピーして、`web/lang/<言語コード>.json`(例: `fr.json`)を作り、値だけを訳します。`{name}` のような `{...}` は、そのまま残します(実行時に値が入ります)。
+2. `web/i18n.js` の `LANGUAGES` に `fr: "Français"` を足します。
+3. `src/api.rs` の `asset` に `/lang/fr.json` を足します(ファイルはバイナリに埋め込まれます)。
+4. `cargo test` を実行します。キーや `{...}` が `ja.json` とそろっていないと、テストが落ちます。
+
+画面に出す文を足すときは、`web/index.html` では `data-i18n="キー"`、`web/app.js` では `t("キー")` を使い、キーを `ja.json` と各言語に足します。サーバーに新しいエラーを足すときは、`coded(...)` か `Detail::new(...)` で `code` を付け、`err.<code>` を辞書に足してください(抜けていればテストが落ちます)。
 
 ## 起動される側の PC の設定
 

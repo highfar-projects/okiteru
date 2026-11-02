@@ -2,7 +2,8 @@
 
 const POLL_MS = 3000;
 const WAIT_MS = 180000; // ボタンを押してから、起動・停止を待つ時間
-const POWER_LABELS = { hibernate: "休止状態", sleep: "スリープ", shutdown: "シャットダウン" };
+const { t } = window.i18n;
+const powerLabel = (power) => t(`power.${power}`);
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -23,7 +24,7 @@ async function api(method, path, body) {
   const res = await fetch(path, options);
   const data = await res.json().catch(() => ({}));
   if (res.status === 401 && !path.startsWith("/api/auth/")) showLogin();
-  if (!res.ok) throw new Error(data.error || `エラーが発生しました (${res.status})`);
+  if (!res.ok) throw new Error(window.i18n.errorMessage(data, res.status));
   return data;
 }
 
@@ -118,10 +119,10 @@ function createCard(id) {
   const li = el("li", "card");
   const head = el("div", "card-head");
   const name = el("h2");
-  const edit = el("button", "", "設定");
+  const edit = el("button", "", t("card.settings"));
   edit.type = "button";
   edit.addEventListener("click", () => openEdit(id));
-  const plan = el("button", "", "予約");
+  const plan = el("button", "", t("card.schedule"));
   plan.type = "button";
   plan.addEventListener("click", () => openSchedules(id));
   const buttons = el("div", "buttons");
@@ -133,10 +134,10 @@ function createCard(id) {
   const state = el("div", "state");
   const label = el("span");
   state.append(el("span", "dot"), label);
-  const wake = el("button", "wake primary", "起きてください");
+  const wake = el("button", "wake primary", t("card.wake"));
   wake.type = "button";
   wake.addEventListener("click", () => wakeDevice(id));
-  const sleep = el("button", "sleep", "お休みなさい");
+  const sleep = el("button", "sleep", t("card.sleep"));
   sleep.type = "button";
   sleep.addEventListener("click", () => sleepDevice(id));
   const note = el("p", "note");
@@ -166,13 +167,13 @@ function render() {
       notes.delete(d.id);
     } else if (deadline && now >= deadline) {
       waitingUntil.delete(d.id);
-      notes.set(d.id, { text: "3 分たっても起きませんでした", error: true });
+      notes.set(d.id, { text: t("note.wake_timeout"), error: true });
     }
     // 中継が起動要求を送り直したあと、上限まで送っても起きなかったとき
     if (!d.up && d.wake?.gave_up && waitingUntil.has(d.id)) {
       waitingUntil.delete(d.id);
       notes.set(d.id, {
-        text: `起動要求を ${d.wake.sent} 回送りましたが、起きませんでした。画面下の「起動しないときは」を確認してください`,
+        text: t("note.wake_gave_up", { n: d.wake.sent }),
         error: true,
       });
     }
@@ -183,18 +184,26 @@ function render() {
       sleepingUntil.delete(d.id);
     } else if (sleepDeadline && now >= sleepDeadline) {
       sleepingUntil.delete(d.id);
-      notes.set(d.id, { text: "3 分たってもお休みしませんでした。相手の設定を確認してください", error: true });
+      notes.set(d.id, { text: t("note.sleep_timeout"), error: true });
     }
     const sleeping = d.up && sleepingUntil.has(d.id);
 
     card.name.textContent = d.name;
-    card.sub.textContent = `${d.ip} ・ 確認ポート ${d.check_port}`;
+    card.sub.textContent = t("card.sub", { ip: d.ip, port: d.check_port });
     const upcoming = nextSchedule(d.id);
-    card.next.textContent = upcoming ? `次の予約: ${formatWhen(upcoming.next)}` : "";
+    card.next.textContent = upcoming ? t("card.next", { when: formatWhen(upcoming.next) }) : "";
     card.next.hidden = !upcoming;
     card.state.classList.toggle("up", d.up);
     card.state.classList.toggle("waiting", waiting || sleeping);
-    card.label.textContent = sleeping ? "お休みなさい…(お休み待ち)" : d.up ? "起きています" : waiting ? `起きてください…(起きるのを待っています${d.wake?.sent > 1 ? `。${d.wake.sent} 回目を送りました` : ""})` : "お休み中です";
+    card.label.textContent = sleeping
+      ? t("state.sleeping")
+      : d.up
+        ? t("state.up")
+        : waiting
+          ? d.wake?.sent > 1
+            ? t("state.waiting_sent", { n: d.wake.sent })
+            : t("state.waiting")
+          : t("state.down");
     card.wake.disabled = d.up || waiting;
     card.sleep.hidden = !d.tailnet_ip; // 相手の agent に届く IP が分かっている機器だけ
     card.sleep.disabled = !d.up || sleeping;
@@ -220,7 +229,7 @@ async function refresh() {
     $("#banner").hidden = true;
   } catch (e) {
     const banner = $("#banner");
-    banner.textContent = e instanceof TypeError ? "中継サーバーに接続できません" : e.message;
+    banner.textContent = e instanceof TypeError ? t("banner.offline") : e.message;
     banner.hidden = false;
   }
   render();
@@ -232,9 +241,9 @@ async function wakeDevice(id) {
   try {
     await api("POST", `/api/devices/${id}/wake`);
     waitingUntil.set(id, Date.now() + WAIT_MS);
-    notes.set(id, { text: "起きてくださいと呼びかけました" });
+    notes.set(id, { text: t("note.wake_sent") });
   } catch (e) {
-    notes.set(id, { text: `呼びかけに失敗しました: ${e.message}`, error: true });
+    notes.set(id, { text: t("note.wake_failed", { error: e.message }), error: true });
   }
   render();
   refresh();
@@ -245,10 +254,10 @@ async function sleepDevice(id) {
   if (!d) return;
   const shutdown = d.power === "shutdown";
   const ok = await askConfirm({
-    title: `「${d.name}」をお休みさせますか?`,
-    detail: `する操作: ${POWER_LABELS[d.power]}`,
-    warning: shutdown ? "シャットダウンすると、設定によっては「起きてください」で起こせないことがあります。保存を求めるアプリが開いていると、止まらないこともあります。" : "",
-    yes: `${POWER_LABELS[d.power]}にする`,
+    title: t("sleep.title", { name: d.name }),
+    detail: t("sleep.detail", { power: powerLabel(d.power) }),
+    warning: shutdown ? t("sleep.warning_shutdown") : "",
+    yes: t("sleep.yes", { power: powerLabel(d.power) }),
     strong: shutdown,
   });
   if (!ok) return;
@@ -257,9 +266,9 @@ async function sleepDevice(id) {
   try {
     await api("POST", `/api/devices/${id}/sleep`);
     sleepingUntil.set(id, Date.now() + WAIT_MS);
-    notes.set(id, { text: `お休みなさいと伝えました(${POWER_LABELS[d.power]})` });
+    notes.set(id, { text: t("note.sleep_sent", { power: powerLabel(d.power) }) });
   } catch (e) {
-    notes.set(id, { text: `伝えられませんでした: ${e.message}`, error: true });
+    notes.set(id, { text: t("note.sleep_failed", { error: e.message }), error: true });
   }
   render();
   refresh();
@@ -280,7 +289,7 @@ document.addEventListener("visibilitychange", () => (document.hidden ? stop() : 
 
 // ---- 起動予約 ----
 
-const DAY_NAMES = ["月", "火", "水", "木", "金", "土", "日"];
+const dayName = (i) => t(`day.${i}`);
 const scheduleDialog = $("#schedule-dialog");
 const scheduleForm = $("#schedule-form");
 let scheduleDeviceId = null;
@@ -291,31 +300,32 @@ function nextSchedule(deviceId) {
   return upcoming[0];
 }
 
-// "2026-11-03T07:30" → 「11/3(火) 07:30」
+// "2026-11-03T07:30" → 日本語: 「11/3(火) 07:30」、英語: 「Tue 11/3 07:30」
 function formatWhen(text) {
   const [date, time] = text.split("T");
   const [y, m, d] = date.split("-").map(Number);
-  const weekday = DAY_NAMES[(new Date(y, m - 1, d).getDay() + 6) % 7];
-  return `${m}/${d}(${weekday}) ${time}`;
+  const weekday = dayName((new Date(y, m - 1, d).getDay() + 6) % 7);
+  return t("when", { month: m, day: d, weekday, time });
 }
 
 function describeSchedule(s) {
-  if (s.repeat === "once") return `${s.date.replaceAll("-", "/")} に一度だけ`;
-  const days = s.days.join("") === "01234" ? "平日" : s.days.length === 7 ? "毎日" : s.days.map((d) => DAY_NAMES[d]).join("");
-  return `毎週 ${days}`;
+  if (s.repeat === "once") return t("sched.describe_once", { date: s.date.replaceAll("-", "/") });
+  const days =
+    s.days.join("") === "01234" ? t("sched.weekdays") : s.days.length === 7 ? t("sched.everyday") : s.days.map(dayName).join(t("sched.days_sep"));
+  return t("sched.describe_weekly", { days });
 }
 
 function scheduleItem(s) {
   const li = el("li", s.enabled ? "schedule" : "schedule off");
   const info = el("div");
-  info.append(el("strong", "", s.time), el("span", "", describeSchedule(s) + (s.next ? ` ・ 次は ${formatWhen(s.next)}` : s.enabled ? "" : " ・ 止めています")));
-  const toggle = el("button", "", s.enabled ? "止める" : "再開");
+  info.append(el("strong", "", s.time), el("span", "", describeSchedule(s) + (s.next ? t("sched.next_suffix", { when: formatWhen(s.next) }) : s.enabled ? "" : t("sched.paused_suffix"))));
+  const toggle = el("button", "", s.enabled ? t("sched.pause") : t("sched.resume"));
   toggle.type = "button";
   toggle.addEventListener("click", () => changeSchedule(() => api("PATCH", `/api/schedules/${s.id}`, { enabled: !s.enabled })));
-  const remove = el("button", "danger", "削除");
+  const remove = el("button", "danger", t("delete"));
   remove.type = "button";
   remove.addEventListener("click", async () => {
-    const ok = await askConfirm({ title: "予約を削除しますか?", detail: `${s.time} ・ ${describeSchedule(s)}`, yes: "削除する" });
+    const ok = await askConfirm({ title: t("sched.delete_title"), detail: `${s.time} ・ ${describeSchedule(s)}`, yes: t("sched.delete_yes") });
     if (ok) changeSchedule(() => api("DELETE", `/api/schedules/${s.id}`));
   });
   const buttons = el("div", "buttons");
@@ -345,7 +355,7 @@ function openSchedules(id) {
   const d = devices.find((x) => x.id === id);
   if (!d) return;
   scheduleDeviceId = id;
-  $("#schedule-title").textContent = `「${d.name}」の起動予約`;
+  $("#schedule-title").textContent = t("sched.title", { name: d.name });
   setNote($("#schedule-note"), "");
   renderSchedules();
   scheduleDialog.showModal();
@@ -379,10 +389,10 @@ const notifyButton = $("#notify");
 
 function pushUnsupportedReason() {
   if (!window.isSecureContext) {
-    return "通知には HTTPS が必要です。`tailscale serve` で HTTPS にしてから開いてください(README を参照)";
+    return t("notify.https");
   }
   if (!("serviceWorker" in navigator && "PushManager" in window && "Notification" in window)) {
-    return "このブラウザは通知に対応していません。iPhone では、ホーム画面に追加したアプリから開いてください";
+    return t("notify.unsupported");
   }
   return "";
 }
@@ -407,13 +417,13 @@ async function refreshNotifyButton() {
       on = false;
     }
   }
-  notifyButton.textContent = on ? "通知: オン" : "通知: オフ";
+  notifyButton.textContent = on ? t("header.notify_on") : t("header.notify_off");
   notifyButton.dataset.on = on ? "1" : "";
 }
 
 async function enableNotify() {
   if ((await Notification.requestPermission()) !== "granted") {
-    throw new Error("通知が許可されませんでした。ブラウザの設定で、このサイトの通知を許可してください");
+    throw new Error(t("notify.denied"));
   }
   await navigator.serviceWorker.register("/sw.js");
   const reg = await navigator.serviceWorker.ready;
@@ -422,7 +432,7 @@ async function enableNotify() {
     (await reg.pushManager.getSubscription()) ??
     (await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToBytes(key) }));
   await api("POST", "/api/push/subscribe", sub.toJSON());
-  setNote($("#notify-note"), "起きたとき、起きなかったときに通知します");
+  setNote($("#notify-note"), t("notify.enabled"));
 }
 
 async function disableNotify() {
@@ -468,21 +478,17 @@ async function scan() {
   const list = $("#candidates");
   button.disabled = true;
   list.replaceChildren();
-  setNote($("#scan-note"), "探しています…(数秒かかります)");
+  setNote($("#scan-note"), t("scan.searching"));
   try {
     const found = await api("GET", "/api/candidates");
     if (found.length === 0) {
-      setNote(
-        $("#scan-note"),
-        "見つかりませんでした。対象の PC が起動していて、Tailscale が動いているか確認してください。手で入力して追加することもできます。",
-        true,
-      );
+      setNote($("#scan-note"), t("scan.none"), true);
     } else {
       setNote($("#scan-note"), "");
       for (const c of found) list.append(candidateItem(c));
     }
   } catch (e) {
-    setNote($("#scan-note"), `探せませんでした: ${e.message}`, true);
+    setNote($("#scan-note"), t("scan.failed", { error: e.message }), true);
   }
   button.disabled = false;
 }
@@ -491,7 +497,7 @@ function candidateItem(c) {
   const li = el("li", "candidate");
   const info = el("div");
   info.append(el("strong", "", c.host_name), el("span", "", `${c.ip} ・ ${c.mac} ・ ${c.os}`));
-  const add = el("button", "primary", c.registered ? "登録済み" : "追加");
+  const add = el("button", "primary", c.registered ? t("candidate.registered") : t("candidate.add"));
   add.type = "button";
   add.disabled = c.registered;
   add.addEventListener("click", async () => {
@@ -500,7 +506,7 @@ function candidateItem(c) {
       const body = { name: c.host_name, mac: c.mac, ip: c.ip };
       if (c.tailnet_ip) body.tailnet_ip = c.tailnet_ip;
       await api("POST", "/api/devices", body);
-      add.textContent = "登録済み";
+      add.textContent = t("candidate.registered");
       refresh();
     } catch (e) {
       add.disabled = false;
@@ -546,7 +552,7 @@ function openEdit(id) {
   form.check_port.value = d.check_port;
   form.power.value = d.power;
   form.tailnet_ip.value = d.tailnet_ip ?? "";
-  $("#edit-mac").textContent = d.mac;
+  $("#edit-mac-line").textContent = t("edit.mac", { mac: d.mac });
   setNote($("#edit-note"), "");
   editDialog.showModal();
 }
@@ -573,10 +579,10 @@ $("#delete").addEventListener("click", async () => {
   const d = devices.find((x) => x.id === editingId);
   if (!d) return;
   const ok = await askConfirm({
-    title: "機器を削除しますか?",
-    detail: `「${d.name}」`,
-    warning: "この機器の起動予約も、まとめて消えます。",
-    yes: "削除する",
+    title: t("delete.title"),
+    detail: t("delete.detail", { name: d.name }),
+    warning: t("delete.warning"),
+    yes: t("sched.delete_yes"),
   });
   if (!ok) return;
   try {

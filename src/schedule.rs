@@ -12,7 +12,7 @@ use std::{fs, io};
 use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime};
 use serde::{Deserialize, Serialize};
 
-use crate::config::ConfigError;
+use crate::config::{ConfigError, Detail};
 
 /// 予約の時刻からこの時間までなら、遅れても実行する。
 pub const GRACE: Duration = Duration::minutes(5);
@@ -83,7 +83,7 @@ fn weekday(date: NaiveDate) -> u8 {
 /// 曜日の指定を検めて、並べ替えて重複を除く。
 pub fn check_days(days: &[u8]) -> Result<Vec<u8>, ConfigError> {
     if days.is_empty() || days.iter().any(|d| *d > 6) {
-        return Err(ConfigError::Invalid("曜日は 1 つ以上、月曜(0)から日曜(6)で指定してください".into()));
+        return Err(ConfigError::Invalid(Detail::new("days_invalid", "曜日は 1 つ以上、月曜(0)から日曜(6)で指定してください")));
     }
     let mut days = days.to_vec();
     days.sort_unstable();
@@ -127,9 +127,9 @@ impl ScheduleStore {
         let items = match fs::read_to_string(path) {
             Ok(text) => {
                 let file: FileFormat = serde_json::from_str(&text)
-                    .map_err(|e| ConfigError::Invalid(format!("{} を読めません: {e}", path.display())))?;
+                    .map_err(|e| ConfigError::Invalid(format!("{} を読めません: {e}", path.display()).into()))?;
                 if file.version != FORMAT_VERSION {
-                    return Err(ConfigError::Invalid(format!("{} は未対応の版({})です", path.display(), file.version)));
+                    return Err(ConfigError::Invalid(format!("{} は未対応の版({})です", path.display(), file.version).into()));
                 }
                 file.schedules
             }
@@ -146,7 +146,7 @@ impl ScheduleStore {
     /// 追加する。作った時点で過ぎている時刻は、実行済みとして扱う(追加した直後に走らないように)。
     pub fn add(&mut self, new: NewSchedule, now: NaiveDateTime) -> Result<Schedule, ConfigError> {
         if self.items.len() >= MAX_SCHEDULES {
-            return Err(ConfigError::Invalid(format!("登録できる予約は {MAX_SCHEDULES} 件までです")));
+            return Err(ConfigError::Invalid(Detail::new("schedule_limit", format!("登録できる予約は {MAX_SCHEDULES} 件までです")).with("max", MAX_SCHEDULES)));
         }
         let repeat = check_repeat(new.repeat, new.time, now)?;
         let mut schedule = Schedule {
@@ -226,7 +226,7 @@ impl ScheduleStore {
     /// 先にファイルへ書き、成功したときだけメモリを更新する。
     fn commit(&mut self, items: Vec<Schedule>) -> Result<(), ConfigError> {
         let text = serde_json::to_string_pretty(&FileFormat { version: FORMAT_VERSION, schedules: items.clone() })
-            .map_err(|e| ConfigError::Invalid(e.to_string()))?;
+            .map_err(|e| ConfigError::Invalid(e.to_string().into()))?;
         if let Some(dir) = self.path.parent() {
             fs::create_dir_all(dir)?;
         }
@@ -243,7 +243,7 @@ fn check_repeat(repeat: Repeat, time: NaiveTime, now: NaiveDateTime) -> Result<R
     match repeat {
         Repeat::Weekly { days } => Ok(Repeat::Weekly { days: check_days(&days)? }),
         Repeat::Once { date } if date.and_time(time) <= now => {
-            Err(ConfigError::Invalid("一度きりの予約は、これからの日時を指定してください".into()))
+            Err(ConfigError::Invalid(Detail::new("once_in_past", "一度きりの予約は、これからの日時を指定してください")))
         }
         once => Ok(once),
     }

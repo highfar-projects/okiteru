@@ -34,10 +34,41 @@ pub struct Device {
     pub power: Power,
 }
 
+/// エラーの内容。`text` は日本語の文(ログや旧クライアント向け)、`code` と `params` は画面が言語ごとの文を作るための印。
+#[derive(Debug, Clone, Default)]
+pub struct Detail {
+    pub code: &'static str,
+    pub params: Vec<(&'static str, String)>,
+    pub text: String,
+}
+
+impl Detail {
+    pub fn new(code: &'static str, text: impl Into<String>) -> Detail {
+        Detail { code, params: Vec::new(), text: text.into() }
+    }
+
+    pub fn with(mut self, key: &'static str, value: impl ToString) -> Detail {
+        self.params.push((key, value.to_string()));
+        self
+    }
+}
+
+impl From<String> for Detail {
+    fn from(text: String) -> Detail {
+        Detail { text, ..Detail::default() }
+    }
+}
+
+impl From<&str> for Detail {
+    fn from(text: &str) -> Detail {
+        text.to_string().into()
+    }
+}
+
 #[derive(Debug)]
 pub enum ConfigError {
-    Invalid(String),
-    Duplicate(String),
+    Invalid(Detail),
+    Duplicate(Detail),
     NotFound,
     Io(io::Error),
 }
@@ -45,7 +76,7 @@ pub enum ConfigError {
 impl fmt::Display for ConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ConfigError::Invalid(m) | ConfigError::Duplicate(m) => f.write_str(m),
+            ConfigError::Invalid(m) | ConfigError::Duplicate(m) => f.write_str(&m.text),
             ConfigError::NotFound => f.write_str("機器が見つかりません"),
             ConfigError::Io(e) => write!(f, "設定ファイルの読み書きに失敗しました: {e}"),
         }
@@ -104,7 +135,7 @@ pub fn default_path() -> PathBuf {
 fn check_name(name: &str) -> Result<String, ConfigError> {
     let name = name.trim();
     if name.is_empty() || name.chars().count() > MAX_NAME_CHARS || name.chars().any(char::is_control) {
-        return Err(ConfigError::Invalid(format!("名前は 1〜{MAX_NAME_CHARS} 文字で入力してください")));
+        return Err(ConfigError::Invalid(Detail::new("name_length", format!("名前は 1〜{MAX_NAME_CHARS} 文字で入力してください")).with("max", MAX_NAME_CHARS)));
     }
     Ok(name.to_string())
 }
@@ -113,7 +144,7 @@ fn check_mac(mac: Mac) -> Result<Mac, ConfigError> {
     if mac.is_unicast() {
         Ok(mac)
     } else {
-        Err(ConfigError::Invalid("ブロードキャスト・マルチキャストの MAC アドレスは登録できません".into()))
+        Err(ConfigError::Invalid(Detail::new("mac_not_unicast", "ブロードキャスト・マルチキャストの MAC アドレスは登録できません")))
     }
 }
 
@@ -122,7 +153,7 @@ fn check_ip(ip: Ipv4Addr) -> Result<Ipv4Addr, ConfigError> {
     if nic::is_lan_address(ip) {
         Ok(ip)
     } else {
-        Err(ConfigError::Invalid("LAN の私的 IP アドレス(192.168.x.x など)を指定してください".into()))
+        Err(ConfigError::Invalid(Detail::new("ip_not_lan", "LAN の私的 IP アドレス(192.168.x.x など)を指定してください")))
     }
 }
 
@@ -131,13 +162,13 @@ fn check_tailnet_ip(ip: Ipv4Addr) -> Result<Ipv4Addr, ConfigError> {
     if nic::is_tailnet(ip) {
         Ok(ip)
     } else {
-        Err(ConfigError::Invalid("Tailscale の IP アドレス(100.x.x.x)を指定してください".into()))
+        Err(ConfigError::Invalid(Detail::new("ip_not_tailnet", "Tailscale の IP アドレス(100.x.x.x)を指定してください")))
     }
 }
 
 fn check_port(port: u16) -> Result<u16, ConfigError> {
     if port == 0 {
-        Err(ConfigError::Invalid("ポート番号は 1〜65535 で指定してください".into()))
+        Err(ConfigError::Invalid(Detail::new("port_range", "ポート番号は 1〜65535 で指定してください")))
     } else {
         Ok(port)
     }
@@ -154,13 +185,9 @@ impl Store {
         let devices = match fs::read_to_string(path) {
             Ok(text) => {
                 let file: FileFormat = serde_json::from_str(&text)
-                    .map_err(|e| ConfigError::Invalid(format!("{} を読めません: {e}", path.display())))?;
+                    .map_err(|e| ConfigError::Invalid(format!("{} を読めません: {e}", path.display()).into()))?;
                 if file.version != FORMAT_VERSION {
-                    return Err(ConfigError::Invalid(format!(
-                        "{} は未対応の版({})です",
-                        path.display(),
-                        file.version
-                    )));
+                    return Err(ConfigError::Invalid(format!("{} は未対応の版({})です", path.display(), file.version).into()));
                 }
                 file.devices
             }
@@ -180,7 +207,7 @@ impl Store {
 
     pub fn add(&mut self, new: NewDevice) -> Result<Device, ConfigError> {
         if self.devices.len() >= MAX_DEVICES {
-            return Err(ConfigError::Invalid(format!("登録できるのは {MAX_DEVICES} 台までです")));
+            return Err(ConfigError::Invalid(Detail::new("device_limit", format!("登録できるのは {MAX_DEVICES} 台までです")).with("max", MAX_DEVICES)));
         }
         let mac = check_mac(new.mac)?;
         self.ensure_unique_mac(mac, None)?;
@@ -235,7 +262,7 @@ impl Store {
 
     fn ensure_unique_mac(&self, mac: Mac, except: Option<u32>) -> Result<(), ConfigError> {
         match self.devices.iter().find(|d| d.mac == mac && Some(d.id) != except) {
-            Some(d) => Err(ConfigError::Duplicate(format!("この MAC アドレスは「{}」として登録済みです", d.name))),
+            Some(d) => Err(ConfigError::Duplicate(Detail::new("mac_duplicate", format!("この MAC アドレスは「{}」として登録済みです", d.name)).with("name", &d.name))),
             None => Ok(()),
         }
     }
@@ -243,7 +270,7 @@ impl Store {
     /// 先にファイルへ書き、成功したときだけメモリを更新する。
     fn commit(&mut self, devices: Vec<Device>) -> Result<(), ConfigError> {
         let text = serde_json::to_string_pretty(&FileFormat { version: FORMAT_VERSION, devices: devices.clone() })
-            .map_err(|e| ConfigError::Invalid(e.to_string()))?;
+            .map_err(|e| ConfigError::Invalid(e.to_string().into()))?;
         if let Some(dir) = self.path.parent() {
             fs::create_dir_all(dir)?;
         }

@@ -8,7 +8,7 @@ use std::{fs, io};
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::ConfigError;
+use crate::config::{ConfigError, Detail};
 use crate::webpush;
 
 const FORMAT_VERSION: u32 = 1;
@@ -71,17 +71,17 @@ impl PushStore {
         match fs::read_to_string(path) {
             Ok(text) => {
                 let file: FileFormat = serde_json::from_str(&text)
-                    .map_err(|e| ConfigError::Invalid(format!("{} を読めません: {e}", path.display())))?;
+                    .map_err(|e| ConfigError::Invalid(format!("{} を読めません: {e}", path.display()).into()))?;
                 if file.version != FORMAT_VERSION {
-                    return Err(ConfigError::Invalid(format!("{} は未対応の版({})です", path.display(), file.version)));
+                    return Err(ConfigError::Invalid(format!("{} は未対応の版({})です", path.display(), file.version).into()));
                 }
                 let vapid_private = webpush::unb64(&file.vapid_private)
                     .filter(|k| webpush::public_key(k).is_ok())
-                    .ok_or_else(|| ConfigError::Invalid(format!("{} の鍵が正しくありません", path.display())))?;
+                    .ok_or_else(|| ConfigError::Invalid(format!("{} の鍵が正しくありません", path.display()).into()))?;
                 Ok(PushStore { path: path.to_path_buf(), vapid_private, subscriptions: file.subscriptions })
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                let vapid_private = webpush::new_secret().map_err(ConfigError::Invalid)?.to_vec();
+                let vapid_private = webpush::new_secret().map_err(|e| ConfigError::Invalid(e.into()))?.to_vec();
                 let mut store = PushStore { path: path.to_path_buf(), vapid_private, subscriptions: Vec::new() };
                 store.commit(Vec::new())?;
                 Ok(store)
@@ -106,16 +106,16 @@ impl PushStore {
     /// 購読を足す。同じ送信先は置き換える。
     pub fn add(&mut self, sub: Subscription) -> Result<(), ConfigError> {
         if !allowed_endpoint(&sub.endpoint) {
-            return Err(ConfigError::Invalid("このブラウザの通知先には対応していません".into()));
+            return Err(ConfigError::Invalid(Detail::new("push_endpoint_unsupported", "このブラウザの通知先には対応していません")));
         }
         let key_ok = webpush::unb64(&sub.p256dh).is_some_and(|k| webpush::valid_public_key(&k));
         let auth_ok = webpush::unb64(&sub.auth).is_some_and(|a| a.len() == 16);
         if !key_ok || !auth_ok {
-            return Err(ConfigError::Invalid("通知の鍵が正しくありません".into()));
+            return Err(ConfigError::Invalid(Detail::new("push_key_invalid", "通知の鍵が正しくありません")));
         }
         let mut subs: Vec<_> = self.subscriptions.iter().filter(|s| s.endpoint != sub.endpoint).cloned().collect();
         if subs.len() >= MAX_SUBSCRIPTIONS {
-            return Err(ConfigError::Invalid(format!("通知を受け取れる端末は {MAX_SUBSCRIPTIONS} 台までです")));
+            return Err(ConfigError::Invalid(Detail::new("push_limit", format!("通知を受け取れる端末は {MAX_SUBSCRIPTIONS} 台までです")).with("max", MAX_SUBSCRIPTIONS)));
         }
         subs.push(sub);
         self.commit(subs)
@@ -132,7 +132,7 @@ impl PushStore {
 
     fn commit(&mut self, subscriptions: Vec<Subscription>) -> Result<(), ConfigError> {
         let file = FileFormat { version: FORMAT_VERSION, vapid_private: webpush::b64(&self.vapid_private), subscriptions: subscriptions.clone() };
-        let text = serde_json::to_string_pretty(&file).map_err(|e| ConfigError::Invalid(e.to_string()))?;
+        let text = serde_json::to_string_pretty(&file).map_err(|e| ConfigError::Invalid(e.to_string().into()))?;
         if let Some(dir) = self.path.parent() {
             fs::create_dir_all(dir)?;
         }
